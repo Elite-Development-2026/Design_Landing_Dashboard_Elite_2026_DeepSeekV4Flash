@@ -1,7 +1,8 @@
 import type { Metadata } from 'next';
 import LandingPageContent from './landing-page-content';
 
-const SITE_URL = 'https://app.elitedev.com.sa';
+// Reads from env so previews and the future custom domain stay correct without code changes.
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? 'https://elite-dashboard-blush.vercel.app';
 
 export const metadata: Metadata = {
   title: 'Elite Development | نخبة التطوير — Enterprise Logistics Operations Platform',
@@ -49,6 +50,61 @@ export const metadata: Metadata = {
   },
 };
 
+const faqItems: { q: string; a: string }[] = [
+  {
+    q: 'ما هي نخبة التطوير؟',
+    a: 'منصة تشغيل لوجستي مؤسسية تربط السائقين والمركبات والطلبات والرواتب والامتثال والمصروفات والمخالفات والصيانة والحضور والأداء في نظام تشغيلي واحد.',
+  },
+  {
+    q: 'لمن صُممت؟',
+    a: 'لمشغلي اللوجستيات وخدمات الطرف الثالث في السعودية الذين يديرون أساطيل توصيل وسائقين مكفولين أو أحرارًا ورواتب شهرية.',
+  },
+  {
+    q: 'هل يمكنني إدارة السائقين والمركبات معًا؟',
+    a: 'نعم. ملف السائق يرتبط بمركبة، وسجل المركبة يرتبط بسائقها وصيانتها وحوادثها — وهما لا يكونان منفصلين أبدًا.',
+  },
+  {
+    q: 'كيف تعمل الرواتب؟',
+    a: 'تُحسب الرواتب من بيانات تشغيلية: أهداف الطلبات وواقعها والحضور والمخالفات المعتمدة ورسوم المركبات والصيانة والسلف والتسويات.',
+  },
+  {
+    q: 'هل يمكن تخصيص قواعد الرواتب؟',
+    a: 'نعم. الأهداف ومعدلات المكافأة والعجز وأنواع الخصومات قابلة للتخصيص لكل شركة.',
+  },
+  {
+    q: 'هل يمكن أن تؤثر المخالفات على الرواتب؟',
+    a: 'يمكن للمخالفات المعتمدة أن تدخل في الرواتب كخصومات، ولكل منها موافقة وسجل تدقيق خاص.',
+  },
+  {
+    q: 'هل يمكن ربط تكاليف الصيانة بالسائقين؟',
+    a: 'نعم. يمكن ربط رسوم المركبات وتكاليف الصيانة بالسائق المعين وتنعكس في الراتب.',
+  },
+  {
+    q: 'هل تدعم السائقين الأحرار؟',
+    a: 'نعم. عقود السائقين الأحرار تستخدم قواعد حساب تحددها الشركة، منفصلة عن أنواع العقود المكفولة.',
+  },
+  {
+    q: 'هل تدعم السائقين المكفولين؟',
+    a: 'نعم. هياكل العقود المكفولة قابلة للتخصيص — مثل مركبة + بنزين + سكن، أو مركبة + سكن دون بنزين.',
+  },
+  {
+    q: 'هل تدعم العربية والاتجاه RTL؟',
+    a: 'نعم. الواجهة كاملة ثنائية اللغة — عربية RTL وإنجليزية LTR — بما فيها لوحات التحكم والنماذج والتقارير.',
+  },
+  {
+    q: 'هل مصممة للعمليات السعودية؟',
+    a: 'نعم. الريال السعودي ومستندات السائقين وتتبع الامتثال وسير العمل السعودي مدمجة في المنتج.',
+  },
+  {
+    q: 'هل تدعم تعدد الشركات؟',
+    a: 'نعم. كل شركة تحصل على مساحة عمل معزولة بشعارها وألوانها وبياناتها، مع عزل كامل للبيانات عبر Row Level Security.',
+  },
+  {
+    q: 'هل تتكامل مع منصات خارجية؟',
+    a: 'التكاملات الخارجية جزء من البنية المستقبلية — المنصة الحالية تركز أولاً على مركزية سجلاتك التشغيلية.',
+  },
+];
+
 const jsonLd = {
   '@context': 'https://schema.org',
   '@graph': [
@@ -56,7 +112,7 @@ const jsonLd = {
       '@type': 'Organization',
       name: 'Elite Development',
       alternateName: 'نخبة التطوير',
-      url: '/',
+      url: `${SITE_URL}/`,
       description:
         'Enterprise logistics operations platform connecting drivers, vehicles, orders, payroll, compliance, expenses and reporting in one system.',
     },
@@ -68,9 +124,16 @@ const jsonLd = {
       operatingSystem: 'Web',
       description:
         'Enterprise logistics operations platform for managing drivers, fleet, vehicles, orders, payroll, violations, maintenance, expenses, attendance and reporting.',
-      offers: { '@type': 'Offer', price: '0', priceCurrency: 'SAR' },
     },
-    { '@type': 'WebSite', name: 'Elite Development', url: '/', inLanguage: ['ar', 'en'] },
+    { '@type': 'WebSite', name: 'Elite Development', url: `${SITE_URL}/`, inLanguage: ['ar', 'en'] },
+    {
+      '@type': 'FAQPage',
+      mainEntity: faqItems.map((f) => ({
+        '@type': 'Question',
+        name: f.q,
+        acceptedAnswer: { '@type': 'Answer', text: f.a },
+      })),
+    },
   ],
 };
 
