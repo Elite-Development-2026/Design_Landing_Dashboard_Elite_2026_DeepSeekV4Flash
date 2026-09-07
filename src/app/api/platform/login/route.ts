@@ -40,7 +40,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'User not associated with any company' }, { status: 403 });
     }
 
-    const tenantData = membership.tenants as TenantRow;
+    const tenantData = membership.tenants as unknown as TenantRow;
 
     return NextResponse.json({
       user: authData.user,

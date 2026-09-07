@@ -47,7 +47,7 @@ export default function AccountingPage() {
         description: `Invoice ${inv.invoice_number || ''}`,
         type: 'income' as const,
         amount: Number(inv.total) || 0,
-        date: inv.issue_date,
+        date: inv.issue_date || '',
         category: 'Revenue',
         ref: inv.invoice_number || '',
       }));
@@ -57,7 +57,7 @@ export default function AccountingPage() {
         description: exp.description || exp.expense_code || 'Expense',
         type: 'expense' as const,
         amount: -(Number(exp.amount) || 0),
-        date: exp.expense_date,
+        date: exp.expense_date || '',
         category: exp.category || 'General',
         ref: exp.expense_code || '',
       }));
