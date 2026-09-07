@@ -1,8 +1,26 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
-import { TrendingUp, Users, DollarSign, Truck, ArrowUpRight, ArrowDownRight } from 'lucide-react';
+import {
+  AlertCircle,
+  ArrowDownRight,
+  ArrowUpRight,
+  DollarSign,
+  RefreshCw,
+  TrendingUp,
+  Truck,
+  Users,
+} from 'lucide-react';
+
+interface RecentDriver {
+  id: string;
+  full_name_en: string | null;
+  full_name_ar: string | null;
+  status: string | null;
+  created_at: string | null;
+}
 
 interface Tenant {
   id: string;
@@ -12,73 +30,185 @@ interface Tenant {
   slug: string;
 }
 
-export default function DashboardHome() {
+interface DashboardStats {
+  drivers: number;
+  vehicles: number;
+  monthIncome: number;
+  monthExpenses: number;
+}
+
+const INITIAL_STATS: DashboardStats = {
+  drivers: 0,
+  vehicles: 0,
+  monthIncome: 0,
+  monthExpenses: 0,
+};
+
+function formatSar(amount: number) {
+  return `${amount.toLocaleString('en-SA', {
+    maximumFractionDigits: 0,
+  })} SAR`;
+}
+
+function driverName(driver: RecentDriver) {
+  return driver.full_name_en || driver.full_name_ar || 'Unnamed driver';
+}
+
+function formatDate(value: string | null) {
+  if (!value) return 'Recently added';
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Recently added';
+
+  return date.toLocaleDateString('en-SA', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+  });
+}
+
+export default function DashboardPage() {
   const [tenant, setTenant] = useState<Tenant | null>(null);
   const [loading, setLoading] = useState(true);
-  const [stats, setStats] = useState({
-    drivers: 0,
-    vehicles: 0,
-    monthIncome: 0,
-    monthExpenses: 0,
-  });
-  const [recentDrivers, setRecentDrivers] = useState<any[]>([]);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [stats, setStats] = useState<DashboardStats>(INITIAL_STATS);
+  const [recentDrivers, setRecentDrivers] = useState<RecentDriver[]>([]);
 
   useEffect(() => {
-    const stored = localStorage.getItem('tenant');
-    if (stored) {
-      try {
-        setTenant(JSON.parse(stored));
-      } catch (e) {
-        console.error('Failed to parse tenant:', e);
-      }
+    try {
+      const storedTenant = window.localStorage.getItem('tenant');
+      if (storedTenant) setTenant(JSON.parse(storedTenant) as Tenant);
+    } catch {
+      setTenant(null);
     }
-    loadStats();
   }, []);
 
-  const loadStats = async () => {
-    const supabase = createClient();
-    const monthStart = new Date();
-    monthStart.setDate(1);
-    const monthStartStr = monthStart.toISOString().split('T')[0];
+  const loadDashboard = async (isRefresh = false) => {
+    if (isRefresh) setRefreshing(true);
+    else setLoading(true);
 
-    const [driversRes, vehiclesRes, invoicesRes, expensesRes, recentRes] = await Promise.all([
-      supabase.from('drivers').select('id', { count: 'exact', head: true }).is('deleted_at', null),
-      supabase.from('vehicles').select('id', { count: 'exact', head: true }).is('deleted_at', null),
-      supabase.from('invoices').select('total').is('deleted_at', null).gte('issue_date', monthStartStr),
-      supabase.from('expenses').select('amount').is('deleted_at', null).gte('expense_date', monthStartStr),
-      supabase.from('drivers').select('id, full_name_en, full_name_ar, status, created_at').is('deleted_at', null).order('created_at', { ascending: false }).limit(4),
-    ]);
+    setError(null);
 
-    const monthIncome = (invoicesRes.data || []).reduce((s: number, r: any) => s + (Number(r.total) || 0), 0);
-    const monthExpenses = (expensesRes.data || []).reduce((s: number, r: any) => s + (Number(r.amount) || 0), 0);
+    try {
+      const supabase = createClient();
+      const monthStart = new Date();
+      monthStart.setHours(0, 0, 0, 0);
+      monthStart.setDate(1);
+      const monthStartStr = monthStart.toISOString().slice(0, 10);
 
-    setStats({
-      drivers: driversRes.count || 0,
-      vehicles: vehiclesRes.count || 0,
-      monthIncome,
-      monthExpenses,
-    });
-    setRecentDrivers(recentRes.data || []);
-    setLoading(false);
+      const [driversRes, vehiclesRes, invoicesRes, expensesRes, recentRes] = await Promise.all([
+        supabase
+          .from('drivers')
+          .select('id', { count: 'exact', head: true })
+          .is('deleted_at', null),
+        supabase
+          .from('vehicles')
+          .select('id', { count: 'exact', head: true })
+          .is('deleted_at', null),
+        supabase
+          .from('invoices')
+          .select('total')
+          .is('deleted_at', null)
+          .gte('issue_date', monthStartStr),
+        supabase
+          .from('expenses')
+          .select('amount')
+          .is('deleted_at', null)
+          .gte('expense_date', monthStartStr),
+        supabase
+          .from('drivers')
+          .select('id, full_name_en, full_name_ar, status, created_at')
+          .is('deleted_at', null)
+          .order('created_at', { ascending: false })
+          .limit(4),
+      ]);
+
+      const queryError = [driversRes, vehiclesRes, invoicesRes, expensesRes, recentRes]
+        .map((result) => result.error)
+        .find(Boolean);
+
+      if (queryError) throw queryError;
+
+      const monthIncome = (invoicesRes.data ?? []).reduce(
+        (sum, row: { total?: number | string | null }) => sum + (Number(row.total) || 0),
+        0,
+      );
+      const monthExpenses = (expensesRes.data ?? []).reduce(
+        (sum, row: { amount?: number | string | null }) => sum + (Number(row.amount) || 0),
+        0,
+      );
+
+      setStats({
+        drivers: driversRes.count ?? 0,
+        vehicles: vehiclesRes.count ?? 0,
+        monthIncome,
+        monthExpenses,
+      });
+      setRecentDrivers((recentRes.data ?? []) as RecentDriver[]);
+    } catch (cause) {
+      console.error('Unable to load dashboard data:', cause);
+      setError('We could not load your fleet data. Check your connection and try again.');
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
   };
 
+  useEffect(() => {
+    void loadDashboard();
+  }, []);
+
+  const netPosition = stats.monthIncome - stats.monthExpenses;
+  const totalCashflow = stats.monthIncome + stats.monthExpenses;
+  const incomeShare = totalCashflow > 0 ? (stats.monthIncome / totalCashflow) * 100 : 0;
+  const expenseShare = totalCashflow > 0 ? (stats.monthExpenses / totalCashflow) * 100 : 0;
+
   const metrics = [
-    { title: 'Revenue (This Month)', value: `${stats.monthIncome.toLocaleString()} SAR`, icon: DollarSign, trend: 'up' as const },
-    { title: 'Expenses (This Month)', value: `${stats.monthExpenses.toLocaleString()} SAR`, icon: TrendingUp, trend: stats.monthExpenses > stats.monthIncome ? 'down' as const : 'up' as const },
-    { title: 'Total Drivers', value: String(stats.drivers), icon: Users, trend: 'up' as const },
-    { title: 'Total Vehicles', value: String(stats.vehicles), icon: Truck, trend: 'up' as const },
+    {
+      title: 'Revenue this month',
+      value: formatSar(stats.monthIncome),
+      icon: DollarSign,
+      positive: true,
+      helper: 'Issued invoices this month',
+    },
+    {
+      title: 'Expenses this month',
+      value: formatSar(stats.monthExpenses),
+      icon: TrendingUp,
+      positive: stats.monthExpenses <= stats.monthIncome,
+      helper: 'Recorded expenses this month',
+    },
+    {
+      title: 'Total drivers',
+      value: stats.drivers.toLocaleString('en-SA'),
+      icon: Users,
+      positive: true,
+      helper: 'Active driver records',
+      href: '/drivers',
+    },
+    {
+      title: 'Total vehicles',
+      value: stats.vehicles.toLocaleString('en-SA'),
+      icon: Truck,
+      positive: true,
+      helper: 'Active vehicle records',
+      href: '/vehicles',
+    },
   ];
 
   if (loading) {
     return (
       <div className="space-y-6 animate-pulse">
-        <div className="h-10 bg-white/5 rounded w-64" />
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-          {[1, 2, 3, 4].map(i => <div key={i} className="h-32 bg-white/5 rounded-xl" />)}
+        <div className="h-10 w-72 rounded-xl bg-white/5" />
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+          {[1, 2, 3, 4].map((item) => (
+            <div key={item} className="h-36 rounded-2xl border border-white/5 bg-white/5" />
+          ))}
         </div>
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <div className="h-64 bg-white/5 rounded-xl" />
-          <div className="h-64 bg-white/5 rounded-xl" />
+        <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+          <div className="h-72 rounded-2xl border border-white/5 bg-white/5" />
+          <div className="h-72 rounded-2xl border border-white/5 bg-white/5" />
         </div>
       </div>
     );
@@ -86,81 +216,157 @@ export default function DashboardHome() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold text-white mb-2">Welcome back{tenant ? `, ${tenant.name}` : ''}!</h1>
-        <p className="text-white/60">Here is what is happening with your fleet today.</p>
-      </div>
+      <section className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <p className="text-sm font-medium text-blue-300">Fleet overview</p>
+          <h1 className="mt-1 text-3xl font-bold tracking-tight text-white">
+            Welcome back{tenant?.name ? `, ${tenant.name}` : ''}
+          </h1>
+          <p className="mt-2 text-sm text-white/60">
+            Here is what is happening across your fleet this month.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => void loadDashboard(true)}
+          disabled={refreshing}
+          className="inline-flex items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          <RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
+          Refresh
+        </button>
+      </section>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        {metrics.map((metric, i) => (
-          <div key={i} className="bg-slate-800/50 backdrop-blur-sm border border-white/10 rounded-xl p-5 hover:border-white/20 transition">
-            <div className="flex items-center justify-between mb-3">
-              <div className="p-2 bg-blue-500/10 rounded-lg">
-                <metric.icon className="w-5 h-5 text-blue-400" />
-              </div>
-              <div className={`flex items-center gap-1 text-sm ${metric.trend === 'up' ? 'text-green-400' : 'text-red-400'}`}>
-                {metric.trend === 'up' ? <ArrowUpRight className="w-4 h-4" /> : <ArrowDownRight className="w-4 h-4" />}
-              </div>
-            </div>
-            <div className="text-2xl font-bold text-white mb-1">{metric.value}</div>
-            <div className="text-sm text-white/60">{metric.title}</div>
+      {error && (
+        <div className="flex flex-col gap-3 rounded-2xl border border-red-400/25 bg-red-500/10 p-4 text-sm text-red-100 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-start gap-3">
+            <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-red-300" />
+            <p>{error}</p>
           </div>
-        ))}
-      </div>
+          <button
+            type="button"
+            onClick={() => void loadDashboard()}
+            className="rounded-lg bg-red-400/15 px-3 py-2 font-semibold text-red-100 transition hover:bg-red-400/25"
+          >
+            Try again
+          </button>
+        </div>
+      )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="bg-slate-800/50 backdrop-blur-sm border border-white/10 rounded-xl p-6">
-          <h2 className="text-lg font-semibold text-white mb-4">Latest Drivers</h2>
+      <section className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+        {metrics.map((metric) => {
+          const Icon = metric.icon;
+          const content = (
+            <div className="h-full rounded-2xl border border-white/10 bg-slate-800/50 p-5 backdrop-blur-sm transition hover:-translate-y-0.5 hover:border-white/20 hover:bg-slate-800/70">
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-blue-500/10">
+                  <Icon className="h-5 w-5 text-blue-300" />
+                </div>
+                <div className={`flex items-center gap-1 text-xs font-semibold ${metric.positive ? 'text-emerald-300' : 'text-red-300'}`}>
+                  {metric.positive ? <ArrowUpRight className="h-4 w-4" /> : <ArrowDownRight className="h-4 w-4" />}
+                </div>
+              </div>
+              <p className="mt-5 text-2xl font-bold tracking-tight text-white">{metric.value}</p>
+              <p className="mt-1 text-sm font-medium text-white/75">{metric.title}</p>
+              <p className="mt-1 text-xs text-white/40">{metric.helper}</p>
+            </div>
+          );
+
+          return metric.href ? (
+            <Link key={metric.title} href={metric.href} className="block focus:outline-none focus:ring-2 focus:ring-blue-400/70 focus:ring-offset-2 focus:ring-offset-slate-950 rounded-2xl">
+              {content}
+            </Link>
+          ) : (
+            <div key={metric.title}>{content}</div>
+          );
+        })}
+      </section>
+
+      <section className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+        <div className="rounded-2xl border border-white/10 bg-slate-800/50 p-6 backdrop-blur-sm">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <h2 className="text-lg font-semibold text-white">Latest drivers</h2>
+              <p className="mt-1 text-sm text-white/50">Most recently added driver records</p>
+            </div>
+            <Link href="/drivers" className="text-sm font-semibold text-blue-300 transition hover:text-blue-200">
+              View all
+            </Link>
+          </div>
+
           {recentDrivers.length === 0 ? (
-            <div className="text-center py-8 text-white/40">
-              <Users className="w-10 h-10 mx-auto mb-3 opacity-50" />
-              <p>No drivers yet. Add your first driver to get started.</p>
+            <div className="flex min-h-48 flex-col items-center justify-center rounded-xl border border-dashed border-white/10 bg-white/[0.02] px-4 text-center">
+              <Users className="h-10 w-10 text-white/25" />
+              <p className="mt-3 text-sm font-medium text-white/70">No drivers yet</p>
+              <p className="mt-1 text-sm text-white/40">Add your first driver to begin managing your fleet.</p>
+              <Link href="/drivers" className="mt-4 rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white transition hover:bg-blue-500">
+                Add driver
+              </Link>
             </div>
           ) : (
-            <div className="space-y-3">
-              {recentDrivers.map((d) => (
-                <div key={d.id} className="flex items-center gap-3 p-3 bg-white/5 rounded-lg">
-                  <div className="w-2 h-2 bg-blue-400 rounded-full" />
-                  <div className="flex-1">
-                    <div className="text-white text-sm">{d.full_name_en || d.full_name_ar || 'Unnamed'}</div>
-                    <div className="text-white/50 text-xs">{d.status || 'unknown'}</div>
+            <div className="mt-5 space-y-3">
+              {recentDrivers.map((driver) => (
+                <div key={driver.id} className="flex items-center gap-3 rounded-xl border border-white/5 bg-white/[0.03] p-3.5">
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-blue-500/15 text-sm font-bold text-blue-200">
+                    {driverName(driver).slice(0, 1).toUpperCase()}
                   </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-semibold text-white">{driverName(driver)}</p>
+                    <p className="mt-0.5 text-xs text-white/45">Added {formatDate(driver.created_at)}</p>
+                  </div>
+                  <span className="rounded-full bg-blue-500/10 px-2.5 py-1 text-xs font-medium capitalize text-blue-200">
+                    {driver.status || 'Pending'}
+                  </span>
                 </div>
               ))}
             </div>
           )}
         </div>
 
-        <div className="bg-slate-800/50 backdrop-blur-sm border border-white/10 rounded-xl p-6">
-          <h2 className="text-lg font-semibold text-white mb-4">Net Position (This Month)</h2>
-          <div className="flex items-end gap-2 mb-4">
-            <span className={`text-4xl font-bold ${stats.monthIncome - stats.monthExpenses >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-              {(stats.monthIncome - stats.monthExpenses).toLocaleString()}
-            </span>
-            <span className="text-white/50 mb-1">SAR</span>
+        <div className="rounded-2xl border border-white/10 bg-slate-800/50 p-6 backdrop-blur-sm">
+          <div>
+            <h2 className="text-lg font-semibold text-white">Net position</h2>
+            <p className="mt-1 text-sm text-white/50">Income and expenses for the current month</p>
           </div>
-          <div className="space-y-4">
+
+          <div className="mt-7 flex items-end gap-2">
+            <span className={`text-4xl font-bold tracking-tight ${netPosition >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>
+              {netPosition.toLocaleString('en-SA', { maximumFractionDigits: 0 })}
+            </span>
+            <span className="mb-1 text-sm font-medium text-white/45">SAR</span>
+          </div>
+
+          <div className="mt-7 space-y-5">
             <div>
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-white/70 text-sm">Income</span>
-                <span className="text-green-400 font-medium text-sm">{stats.monthIncome.toLocaleString()} SAR</span>
+              <div className="mb-2 flex items-center justify-between gap-4 text-sm">
+                <span className="text-white/70">Income</span>
+                <span className="font-semibold text-emerald-300">{formatSar(stats.monthIncome)}</span>
               </div>
-              <div className="h-2 bg-white/10 rounded-full overflow-hidden">
-                <div className="h-full bg-green-500 rounded-full" style={{ width: `${stats.monthIncome + stats.monthExpenses > 0 ? (stats.monthIncome / (stats.monthIncome + stats.monthExpenses)) * 100 : 0}%` }} />
+              <div className="h-2 overflow-hidden rounded-full bg-white/10">
+                <div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${incomeShare}%` }} />
               </div>
             </div>
             <div>
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-white/70 text-sm">Expenses</span>
-                <span className="text-red-400 font-medium text-sm">{stats.monthExpenses.toLocaleString()} SAR</span>
+              <div className="mb-2 flex items-center justify-between gap-4 text-sm">
+                <span className="text-white/70">Expenses</span>
+                <span className="font-semibold text-red-300">{formatSar(stats.monthExpenses)}</span>
               </div>
-              <div className="h-2 bg-white/10 rounded-full overflow-hidden">
-                <div className="h-full bg-red-500 rounded-full" style={{ width: `${stats.monthIncome + stats.monthExpenses > 0 ? (stats.monthExpenses / (stats.monthIncome + stats.monthExpenses)) * 100 : 0}%` }} />
+              <div className="h-2 overflow-hidden rounded-full bg-white/10">
+                <div className="h-full rounded-full bg-red-500 transition-all" style={{ width: `${expenseShare}%` }} />
               </div>
             </div>
+          </div>
+
+          <div className="mt-7 rounded-xl border border-white/5 bg-white/[0.03] p-4">
+            <p className="text-xs font-medium uppercase tracking-wide text-white/40">Monthly summary</p>
+            <p className="mt-1 text-sm text-white/70">
+              {netPosition >= 0
+                ? 'Your income currently exceeds recorded expenses.'
+                : 'Recorded expenses currently exceed issued-invoice revenue.'}
+            </p>
           </div>
         </div>
-      </div>
+      </section>
     </div>
   );
 }
