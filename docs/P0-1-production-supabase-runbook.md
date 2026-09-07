@@ -61,6 +61,7 @@ GitHub → **Settings → Environments → `production` → Environment secrets*
 | `PRODUCTION_SUPABASE_URL` | Project Settings → API → Project URL |
 | `PRODUCTION_SUPABASE_ANON_KEY` | Project Settings → API → anon public key |
 | `PRODUCTION_SUPABASE_SERVICE_KEY` | Project Settings → API → service_role key |
+| `STAGING_SUPABASE_URL` | Staging project's URL — used only for the guard's equality check and the bundle verification; never used to build |
 
 The deploy job now fails fast if any of these are missing.
 
@@ -81,6 +82,9 @@ build outside the workflow is also correct.
    appears in the **production** Supabase dashboard, not staging.
 5. Confirm **Deploy config check** is green in CI
    (`scripts/verify-deploy-config.mjs`).
+6. Confirm the **Verify production bundle has no staging references** step
+   passes — it greps `.vercel/output` for the staging host and refuses to
+   deploy if found.
 
 ## Guardrails
 

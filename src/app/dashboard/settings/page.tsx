@@ -1,30 +1,40 @@
 'use client';
 
+'use client';
+
 import { useState, useEffect } from 'react';
 import { Settings, Building2, Palette, Bell, Save } from 'lucide-react';
 
-export default function SettingsPage() {
-  const [tenant, setTenant] = useState<any>(null);
-  const [formData, setFormData] = useState({
-    companyName: '',
-    email: '',
-    primaryColor: '#3b82f6',
-    secondaryColor: '#8b5cf6',
-  });
+interface Tenant {
+  name?: string;
+  brand_colors?: { primary?: string; secondary?: string };
+}
 
-  useEffect(() => {
-    const stored = localStorage.getItem('tenant');
-    if (stored) {
+export default function SettingsPage() {
+  const [tenant, setTenant] = useState<Tenant | null>(() => {
+    try {
+      const stored = localStorage.getItem('tenant');
+      return stored ? JSON.parse(stored) : null;
+    } catch {
+      return null;
+    }
+  });
+  const [formData, setFormData] = useState(() => {
+    const defaults = { companyName: '', email: '', primaryColor: '#3b82f6', secondaryColor: '#8b5cf6' };
+    try {
+      const stored = localStorage.getItem('tenant');
+      if (!stored) return defaults;
       const data = JSON.parse(stored);
-      setTenant(data);
-      setFormData({
+      return {
         companyName: data.name || '',
         email: 'admin@company.com',
         primaryColor: data.brand_colors?.primary || '#3b82f6',
         secondaryColor: data.brand_colors?.secondary || '#8b5cf6',
-      });
+      };
+    } catch {
+      return defaults;
     }
-  }, []);
+  });
 
   const handleSave = () => {
     const updated = { ...tenant, name: formData.companyName, brand_colors: { primary: formData.primaryColor, secondary: formData.secondaryColor } };

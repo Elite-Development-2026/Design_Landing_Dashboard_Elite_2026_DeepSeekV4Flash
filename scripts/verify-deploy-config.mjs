@@ -95,19 +95,79 @@ if (production) {
   assertSecret(production, "NEXT_PUBLIC_SUPABASE_URL", "PRODUCTION_SUPABASE_URL", "production")
   assertSecret(production, "NEXT_PUBLIC_SUPABASE_ANON_KEY", "PRODUCTION_SUPABASE_ANON_KEY", "production")
   assertSecret(production, "SUPABASE_SERVICE_ROLE_KEY", "PRODUCTION_SUPABASE_SERVICE_KEY", "production")
-  const stagingRefs = production.filter((line) => line.includes("STAGING_"))
-  if (stagingRefs.length > 0) {
+  // REV-2: the only STAGING_* reference allowed in production is the URL,
+  // used to compare against PRODUCTION_SUPABASE_URL. Credentials must
+  // never appear in the production job.
+  const forbiddenStaging = production.filter(
+    (line) =>
+      line.includes("STAGING_SUPABASE_ANON_KEY") ||
+      line.includes("STAGING_SUPABASE_SERVICE_KEY")
+  )
+  if (forbiddenStaging.length > 0) {
     fail(
-      `Production job must not reference STAGING_* secrets (${stagingRefs.length} line(s)):\n${stagingRefs.map((line) => `      ${line.trim()}`).join("\n")}`
+      `Production job must not reference STAGING_* credentials (${forbiddenStaging.length} line(s)):\n${forbiddenStaging.map((line) => `      ${line.trim()}`).join("\n")}`
     )
   } else {
-    ok("No STAGING_* references in the production job")
+    ok("No STAGING_* credential references in the production job (URL comparison only)")
   }
-  const hasGuard = production.some((line) => line.includes("Verify production Supabase secrets"))
-  if (hasGuard) {
-    ok("Fail-fast secret guard step present")
-  } else {
+
+  // Extract the lines belonging to a named step (from its "- name:" line to
+  // the next "- name:" line at the same indentation).
+  const stepRegion = (block, stepName) => {
+    const start = block.findIndex((line) => line.includes(`- name: ${stepName}`))
+    if (start === -1) return null
+    const region = []
+    for (let i = start; i < block.length; i++) {
+      if (i > start && /^\s+- name:/.test(block[i])) break
+      region.push(block[i])
+    }
+    return region
+  }
+
+  // REV-1: the guard step must pass secrets via env: and must not
+  // interpolate them into the run: block (shell injection).
+  const guard = stepRegion(production, "Verify production Supabase secrets")
+  if (!guard) {
     fail('Production job is missing the "Verify production Supabase secrets" guard step')
+  } else {
+    ok("Fail-fast secret guard step present")
+    const requiredEnv = [
+      "PRODUCTION_SUPABASE_URL:",
+      "PRODUCTION_SUPABASE_ANON_KEY:",
+      "PRODUCTION_SUPABASE_SERVICE_KEY:",
+      "STAGING_SUPABASE_URL:",
+    ]
+    for (const envKey of requiredEnv) {
+      if (!guard.some((line) => line.includes(envKey))) {
+        fail(`Guard step env: is missing "${envKey.slice(0, -1)}"`)
+      }
+    }
+    const runIdx = guard.findIndex((line) => /^\s+run:\s*\|/.test(line))
+    if (runIdx === -1) {
+      fail("Guard step is missing its run: block")
+    } else {
+      const body = guard.slice(runIdx + 1)
+      const interpolated = body.filter((line) => line.includes("${{ secrets."))
+      if (interpolated.length > 0) {
+        fail(
+          `Guard step interpolates secrets into the run: block (shell-injectable):\n${interpolated.map((line) => `      ${line.trim()}`).join("\n")}`
+        )
+      } else {
+        ok("Guard step reads secrets via env: variables (no interpolation)")
+      }
+    }
+  }
+
+  // REV-6: the production bundle must be checked for staging references
+  // before deploy.
+  const bundleCheck = stepRegion(
+    production,
+    "Verify production bundle has no staging references"
+  )
+  if (bundleCheck) {
+    ok("Bundle verification step present")
+  } else {
+    fail('Production job is missing the "Verify production bundle has no staging references" step')
   }
 }
 

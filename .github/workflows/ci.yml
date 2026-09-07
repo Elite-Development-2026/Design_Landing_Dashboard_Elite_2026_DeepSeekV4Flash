@@ -43,6 +43,11 @@ jobs:
     - name: Install dependencies
       run: pnpm install --frozen-lockfile
 
+    # ── Deploy config regression guard (REV-5: run before expensive gates) ──
+
+    - name: Deploy config check
+      run: node scripts/verify-deploy-config.mjs
+
     # ── Code quality ──────────────────────────────────────────────────────
 
     - name: Lint
@@ -97,8 +102,6 @@ jobs:
         fi
         echo "✅ No environment files in repository"
 
-    - name: Deploy config check
-      run: node scripts/verify-deploy-config.mjs
 
     # ── Smoke test (production build, not dev server) ─────────────────────
 

@@ -98,7 +98,7 @@ export default function AnalyticsPage() {
                   <td className="py-3 px-4 text-white">{data.month}</td>
                   <td className="py-3 px-4 text-white">${data.revenue.toLocaleString()}</td>
                   <td className="py-3 px-4 text-white">{data.users.toLocaleString()}</td>
-                  <td className="py-3 px-4"><span className="text-green-400">+{(Math.random() * 20).toFixed(1)}%</span></td>
+                  <td className="py-3 px-4"><span className="text-green-400">+{((i * 3.7) % 20).toFixed(1)}%</span></td>
                 </tr>
               ))}
             </tbody>

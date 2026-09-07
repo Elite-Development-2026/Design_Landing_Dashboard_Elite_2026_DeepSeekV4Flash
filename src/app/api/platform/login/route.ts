@@ -1,5 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+interface TenantRow {
+  name_en: string | null;
+  name_ar: string | null;
+  logo_url: string | null;
+  brand_colors: Record<string, unknown> | null;
+  slug: string | null;
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -33,7 +40,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'User not associated with any company' }, { status: 403 });
     }
 
-    const tenantData = membership.tenants as any;
+    const tenantData = membership.tenants as TenantRow;
 
     return NextResponse.json({
       user: authData.user,

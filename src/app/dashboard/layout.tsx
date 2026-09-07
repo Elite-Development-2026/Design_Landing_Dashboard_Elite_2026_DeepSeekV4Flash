@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { usePathname } from 'next/navigation';
 import Sidebar from '@/components/sidebar';
 import Header from '@/components/dashboard/Header';
@@ -15,28 +15,14 @@ interface Tenant {
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const [tenant, setTenant] = useState<Tenant | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    const stored = localStorage.getItem('tenant');
-    if (stored) {
-      try {
-        setTenant(JSON.parse(stored));
-      } catch (e) {
-        console.error('Failed to parse tenant:', e);
-      }
+  const [tenant, setTenant] = useState<Tenant | null>(() => {
+    try {
+      const stored = localStorage.getItem('tenant');
+      return stored ? JSON.parse(stored) : null;
+    } catch {
+      return null;
     }
-    setLoading(false);
-  }, []);
-
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-slate-900 flex items-center justify-center">
-        <div className="text-white">Loading...</div>
-      </div>
-    );
-  }
+  });
 
   const primaryColor = tenant?.brand_colors?.primary || '#3b82f6';
   const secondaryColor = tenant?.brand_colors?.secondary || '#8b5cf6';

@@ -20,54 +20,58 @@ export default function AccountingPage() {
   const [error, setError] = useState('');
 
   useEffect(() => {
-    loadData();
+    let cancelled = false;
+    (async () => {
+      const supabase = createClient();
+  
+      const [invoicesRes, expensesRes] = await Promise.all([
+        supabase
+          .from('invoices')
+          .select('id, invoice_number, total, issue_date, status')
+          .is('deleted_at', null)
+          .order('issue_date', { ascending: false })
+          .limit(20),
+        supabase
+          .from('expenses')
+          .select('id, expense_code, description, amount, expense_date, category')
+          .is('deleted_at', null)
+          .order('expense_date', { ascending: false })
+          .limit(20),
+      ]);
+  
+      if (invoicesRes.error) setError(invoicesRes.error.message);
+      if (expensesRes.error) setError(expensesRes.error.message);
+  
+      const income: Transaction[] = (invoicesRes.data || []).map((inv: { id: string; invoice_number?: string | null; total?: number | string | null; issue_date?: string | null }) => ({
+        id: inv.id,
+        description: `Invoice ${inv.invoice_number || ''}`,
+        type: 'income' as const,
+        amount: Number(inv.total) || 0,
+        date: inv.issue_date,
+        category: 'Revenue',
+        ref: inv.invoice_number || '',
+      }));
+  
+      const expenseTx: Transaction[] = (expensesRes.data || []).map((exp: { id: string; expense_code?: string | null; description?: string | null; amount?: number | string | null; expense_date?: string | null; category?: string | null }) => ({
+        id: exp.id,
+        description: exp.description || exp.expense_code || 'Expense',
+        type: 'expense' as const,
+        amount: -(Number(exp.amount) || 0),
+        date: exp.expense_date,
+        category: exp.category || 'General',
+        ref: exp.expense_code || '',
+      }));
+  
+      const merged = [...income, ...expenseTx].sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+      setTransactions(merged);
+      if (cancelled) return;
+      setLoading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  const loadData = async () => {
-    const supabase = createClient();
-
-    const [invoicesRes, expensesRes] = await Promise.all([
-      supabase
-        .from('invoices')
-        .select('id, invoice_number, total, issue_date, status')
-        .is('deleted_at', null)
-        .order('issue_date', { ascending: false })
-        .limit(20),
-      supabase
-        .from('expenses')
-        .select('id, expense_code, description, amount, expense_date, category')
-        .is('deleted_at', null)
-        .order('expense_date', { ascending: false })
-        .limit(20),
-    ]);
-
-    if (invoicesRes.error) setError(invoicesRes.error.message);
-    if (expensesRes.error) setError(expensesRes.error.message);
-
-    const income: Transaction[] = (invoicesRes.data || []).map((inv: any) => ({
-      id: inv.id,
-      description: `Invoice ${inv.invoice_number || ''}`,
-      type: 'income' as const,
-      amount: Number(inv.total) || 0,
-      date: inv.issue_date,
-      category: 'Revenue',
-      ref: inv.invoice_number || '',
-    }));
-
-    const expenseTx: Transaction[] = (expensesRes.data || []).map((exp: any) => ({
-      id: exp.id,
-      description: exp.description || exp.expense_code || 'Expense',
-      type: 'expense' as const,
-      amount: -(Number(exp.amount) || 0),
-      date: exp.expense_date,
-      category: exp.category || 'General',
-      ref: exp.expense_code || '',
-    }));
-
-    const merged = [...income, ...expenseTx].sort((a, b) => (b.date || '').localeCompare(a.date || ''));
-    setTransactions(merged);
-    setLoading(false);
-  };
 
   const totalIncome = transactions.filter(t => t.type === 'income').reduce((s, t) => s + t.amount, 0);
   const totalExpense = Math.abs(transactions.filter(t => t.type === 'expense').reduce((s, t) => s + t.amount, 0));

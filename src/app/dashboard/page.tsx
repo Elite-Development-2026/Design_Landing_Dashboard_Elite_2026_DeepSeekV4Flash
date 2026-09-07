@@ -4,6 +4,14 @@ import { useEffect, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { TrendingUp, Users, DollarSign, Truck, ArrowUpRight, ArrowDownRight } from 'lucide-react';
 
+interface RecentDriver {
+  id: string;
+  full_name_en: string | null;
+  full_name_ar: string | null;
+  status: string | null;
+  created_at: string | null;
+}
+
 interface Tenant {
   id: string;
   name: string;
@@ -13,7 +21,14 @@ interface Tenant {
 }
 
 export default function DashboardHome() {
-  const [tenant, setTenant] = useState<Tenant | null>(null);
+  const [tenant, setTenant] = useState<Tenant | null>(() => {
+    try {
+      const stored = localStorage.getItem('tenant');
+      return stored ? JSON.parse(stored) : null;
+    } catch {
+      return null;
+    }
+  });
   const [loading, setLoading] = useState(true);
   const [stats, setStats] = useState({
     drivers: 0,
@@ -21,46 +36,42 @@ export default function DashboardHome() {
     monthIncome: 0,
     monthExpenses: 0,
   });
-  const [recentDrivers, setRecentDrivers] = useState<any[]>([]);
+  const [recentDrivers, setRecentDrivers] = useState<RecentDriver[]>([]);
 
   useEffect(() => {
-    const stored = localStorage.getItem('tenant');
-    if (stored) {
-      try {
-        setTenant(JSON.parse(stored));
-      } catch (e) {
-        console.error('Failed to parse tenant:', e);
-      }
-    }
-    loadStats();
+    let cancelled = false;
+    (async () => {
+      const supabase = createClient();
+      const monthStart = new Date();
+      monthStart.setDate(1);
+      const monthStartStr = monthStart.toISOString().split('T')[0];
+  
+      const [driversRes, vehiclesRes, invoicesRes, expensesRes, recentRes] = await Promise.all([
+        supabase.from('drivers').select('id', { count: 'exact', head: true }).is('deleted_at', null),
+        supabase.from('vehicles').select('id', { count: 'exact', head: true }).is('deleted_at', null),
+        supabase.from('invoices').select('total').is('deleted_at', null).gte('issue_date', monthStartStr),
+        supabase.from('expenses').select('amount').is('deleted_at', null).gte('expense_date', monthStartStr),
+        supabase.from('drivers').select('id, full_name_en, full_name_ar, status, created_at').is('deleted_at', null).order('created_at', { ascending: false }).limit(4),
+      ]);
+  
+      const monthIncome = (invoicesRes.data || []).reduce((s: number, r: { total?: number | string | null }) => s + (Number(r.total) || 0), 0);
+      const monthExpenses = (expensesRes.data || []).reduce((s: number, r: { amount?: number | string | null }) => s + (Number(r.amount) || 0), 0);
+  
+      setStats({
+        drivers: driversRes.count || 0,
+        vehicles: vehiclesRes.count || 0,
+        monthIncome,
+        monthExpenses,
+      });
+      setRecentDrivers(recentRes.data || []);
+      if (cancelled) return;
+      setLoading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  const loadStats = async () => {
-    const supabase = createClient();
-    const monthStart = new Date();
-    monthStart.setDate(1);
-    const monthStartStr = monthStart.toISOString().split('T')[0];
-
-    const [driversRes, vehiclesRes, invoicesRes, expensesRes, recentRes] = await Promise.all([
-      supabase.from('drivers').select('id', { count: 'exact', head: true }).is('deleted_at', null),
-      supabase.from('vehicles').select('id', { count: 'exact', head: true }).is('deleted_at', null),
-      supabase.from('invoices').select('total').is('deleted_at', null).gte('issue_date', monthStartStr),
-      supabase.from('expenses').select('amount').is('deleted_at', null).gte('expense_date', monthStartStr),
-      supabase.from('drivers').select('id, full_name_en, full_name_ar, status, created_at').is('deleted_at', null).order('created_at', { ascending: false }).limit(4),
-    ]);
-
-    const monthIncome = (invoicesRes.data || []).reduce((s: number, r: any) => s + (Number(r.total) || 0), 0);
-    const monthExpenses = (expensesRes.data || []).reduce((s: number, r: any) => s + (Number(r.amount) || 0), 0);
-
-    setStats({
-      drivers: driversRes.count || 0,
-      vehicles: vehiclesRes.count || 0,
-      monthIncome,
-      monthExpenses,
-    });
-    setRecentDrivers(recentRes.data || []);
-    setLoading(false);
-  };
 
   const metrics = [
     { title: 'Revenue (This Month)', value: `${stats.monthIncome.toLocaleString()} SAR`, icon: DollarSign, trend: 'up' as const },

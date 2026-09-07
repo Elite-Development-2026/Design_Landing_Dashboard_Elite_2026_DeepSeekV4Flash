@@ -24,21 +24,25 @@ export default function DriversPage() {
   const [error, setError] = useState('');
 
   useEffect(() => {
-    loadDrivers();
+    let cancelled = false;
+    (async () => {
+      const supabase = createClient();
+      const { data, error } = await supabase
+        .from('drivers')
+        .select('id, driver_code, full_name_en, full_name_ar, primary_mobile, work_email, status, operational_state, current_city, profile_completeness_score')
+        .is('deleted_at', null)
+        .order('created_at', { ascending: false });
+  
+      if (error) setError(error.message);
+      setDrivers(data || []);
+      if (cancelled) return;
+      setLoading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  const loadDrivers = async () => {
-    const supabase = createClient();
-    const { data, error } = await supabase
-      .from('drivers')
-      .select('id, driver_code, full_name_en, full_name_ar, primary_mobile, work_email, status, operational_state, current_city, profile_completeness_score')
-      .is('deleted_at', null)
-      .order('created_at', { ascending: false });
-
-    if (error) setError(error.message);
-    setDrivers(data || []);
-    setLoading(false);
-  };
 
   const filtered = drivers.filter(d => {
     const name = (d.full_name_en || d.full_name_ar || '').toLowerCase();

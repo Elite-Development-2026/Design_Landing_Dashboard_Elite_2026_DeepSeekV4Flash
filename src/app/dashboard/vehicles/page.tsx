@@ -24,21 +24,25 @@ export default function VehiclesPage() {
   const [error, setError] = useState('');
 
   useEffect(() => {
-    loadVehicles();
+    let cancelled = false;
+    (async () => {
+      const supabase = createClient();
+      const { data, error } = await supabase
+        .from('vehicles')
+        .select('id, vehicle_code, plate_number, make, model, year, status, odometer_current, current_driver_id, photo_url')
+        .is('deleted_at', null)
+        .order('created_at', { ascending: false });
+  
+      if (error) setError(error.message);
+      setVehicles(data || []);
+      if (cancelled) return;
+      setLoading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  const loadVehicles = async () => {
-    const supabase = createClient();
-    const { data, error } = await supabase
-      .from('vehicles')
-      .select('id, vehicle_code, plate_number, make, model, year, status, odometer_current, current_driver_id, photo_url')
-      .is('deleted_at', null)
-      .order('created_at', { ascending: false });
-
-    if (error) setError(error.message);
-    setVehicles(data || []);
-    setLoading(false);
-  };
 
   const filtered = vehicles.filter(v => {
     const q = search.toLowerCase();

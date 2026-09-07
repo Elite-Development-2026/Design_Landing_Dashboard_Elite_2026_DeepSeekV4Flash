@@ -123,14 +123,38 @@ jobs:
         echo "CI run: ${{ github.event.workflow_run.html_url }}"
 
     - name: Verify production Supabase secrets
+      env:
+        PRODUCTION_SUPABASE_URL: ${{ secrets.PRODUCTION_SUPABASE_URL }}
+        PRODUCTION_SUPABASE_ANON_KEY: ${{ secrets.PRODUCTION_SUPABASE_ANON_KEY }}
+        PRODUCTION_SUPABASE_SERVICE_KEY: ${{ secrets.PRODUCTION_SUPABASE_SERVICE_KEY }}
+        STAGING_SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
       run: |
-        if [ -z "${{ secrets.PRODUCTION_SUPABASE_URL }}" ] || [ -z "${{ secrets.PRODUCTION_SUPABASE_ANON_KEY }}" ] || [ -z "${{ secrets.PRODUCTION_SUPABASE_SERVICE_KEY }}" ]; then
-          echo "❌ Production Supabase secrets are not configured"
-          echo "   Add PRODUCTION_SUPABASE_URL / PRODUCTION_SUPABASE_ANON_KEY / PRODUCTION_SUPABASE_SERVICE_KEY"
-          echo "   to GitHub → Settings → Environments → production (see docs/P0-1-production-supabase-runbook.md)"
+        # Secrets are passed through env: and read as shell variables.
+        # Never interpolate secrets directly into a run: block -- Actions
+        # substitutes the raw value into the script text, so any value
+        # containing shell metacharacters becomes executable code.
+        missing=0
+        for var in PRODUCTION_SUPABASE_URL PRODUCTION_SUPABASE_ANON_KEY PRODUCTION_SUPABASE_SERVICE_KEY; do
+          if [ -z "${!var}" ]; then
+            echo "MISSING: $var is not configured"
+            missing=1
+          fi
+        done
+        if [ "$missing" -ne 0 ]; then
+          echo "   Add the PRODUCTION_SUPABASE_* secrets to"
+          echo "   GitHub -> Settings -> Environments -> production"
+          echo "   See docs/P0-1-production-supabase-runbook.md"
           exit 1
         fi
-        echo "✅ Production Supabase secrets present"
+
+        # The entire point of P0-1: production must not be staging.
+        if [ -n "$STAGING_SUPABASE_URL" ] && [ "$PRODUCTION_SUPABASE_URL" = "$STAGING_SUPABASE_URL" ]; then
+          echo "REFUSING: PRODUCTION_SUPABASE_URL is identical to STAGING_SUPABASE_URL"
+          echo "   This would reintroduce the P0-1 defect."
+          exit 1
+        fi
+
+        echo "OK: production Supabase secrets present and distinct from staging"
 
     - name: Install Vercel CLI
       run: npm install -g vercel@latest
@@ -158,6 +182,22 @@ jobs:
         LOG_LEVEL: info
         PERF_LOG_THRESHOLD_MS: 1000
         NODE_ENV: production
+
+    - name: Verify production bundle has no staging references
+      env:
+        STAGING_SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+      run: |
+        if [ -z "$STAGING_SUPABASE_URL" ]; then
+          echo "WARNING: STAGING_SUPABASE_URL not set - skipping bundle check"
+          exit 0
+        fi
+        STAGING_HOST="$(printf '%s' "$STAGING_SUPABASE_URL" | sed -E 's#^https?://##; s#/.*$##')"
+        if [ -n "$STAGING_HOST" ] && grep -rqF "$STAGING_HOST" .vercel/output; then
+          echo "REFUSING: staging Supabase reference found in production bundle: $STAGING_HOST"
+          echo "   Vercel production env may still hold staging values (runbook Step 5)."
+          exit 1
+        fi
+        echo "OK: production bundle contains no staging Supabase references"
 
     - name: Deploy production
       id: deploy
