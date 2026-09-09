@@ -67,7 +67,7 @@ function formatDate(value: string | null) {
   });
 }
 
-export default function DashboardPage() {
+export default function FleetOverviewPage() {
   const [tenant, setTenant] = useState<Tenant | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
