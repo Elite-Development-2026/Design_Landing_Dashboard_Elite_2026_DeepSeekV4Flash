@@ -8,6 +8,7 @@ import { zodResolver } from "@hookform/resolvers/zod"
 import { useForm } from "react-hook-form"
 import { z } from "zod"
 import { createClient } from "@/lib/supabase/client"
+import { REDIRECTS, DASHBOARD_PATH, safeReturnPath } from "@/lib/redirects"
 import { Eye, EyeOff, Lock, Mail, Loader2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -46,10 +47,16 @@ export function LoginForm1({
   const [isLoading, setIsLoading] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
+  // ?registered=1 → the user just finished company registration (step 2→4 of
+  // the product flow) — show a success banner above the form.
+  const [registered, setRegistered] = useState(false)
 
   // Surface auth-flow redirect params set by the middleware (locked/inactive).
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
+    if (params.get("registered") === "1") {
+      setRegistered(true)
+    }
     const code = params.get("error")
     if (code === "AUTH_ACCOUNT_LOCKED") {
       setErrorMessage(t.auth.accountLocked)
@@ -59,6 +66,22 @@ export function LoginForm1({
       setErrorMessage(t.auth.profileNotFound)
     }
   }, [t])
+
+  // Already signed in (session cookie lives on this deployment)? Go straight
+  // to the dashboard instead of showing a redundant login form (req. E).
+  // Skipped when the URL carries an auth-error marker (the session may be
+  // half-state — let the user see the message and act).
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get("error")) return
+    const supabase = createClient()
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session?.user) {
+        router.push(safeReturnPath(new URLSearchParams(window.location.search).get("returnTo") ?? DASHBOARD_PATH))
+        router.refresh()
+      }
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const form = useForm<LoginFormValues>({
     resolver: zodResolver(loginFormSchema),
@@ -89,12 +112,11 @@ export function LoginForm1({
       }
 
       // Signed in — the SSR client has persisted the session cookie.
-      // Honor the middleware's ?returnTo= param (open-redirect guarded).
+      // Honor the ?returnTo= param (open-redirect guarded); the default is
+      // the centralized dashboard destination (absolute when this code runs
+      // under the two-deployment production topology).
       const returnTo = new URLSearchParams(window.location.search).get("returnTo")
-      const safeReturnTo =
-        returnTo && returnTo.startsWith("/") && !returnTo.startsWith("//")
-          ? returnTo
-          : "/dashboard"
+      const safeReturnTo = safeReturnPath(returnTo ?? DASHBOARD_PATH)
       router.push(safeReturnTo)
       router.refresh()
     } catch {
@@ -191,6 +213,16 @@ export function LoginForm1({
                       {t.auth.rememberMe}
                     </label>
                   </div>
+                  {/* Post-registration success banner (step 2 → 4 of the flow) */}
+                  {registered && !errorMessage && (
+                    <div
+                      role="status"
+                      className="rounded-lg border border-emerald-500/25 bg-emerald-500/10 px-3 py-2.5 text-sm"
+                    >
+                      <p className="font-semibold text-emerald-600">{t.auth.registrationSuccessTitle}</p>
+                      <p className="mt-0.5 text-xs text-emerald-600/80">{t.auth.registrationSuccessBody}</p>
+                    </div>
+                  )}
                   {/* Error message */}
                   {errorMessage && (
                     <div

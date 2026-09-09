@@ -19,6 +19,7 @@ import { PricingSection } from '@/components/landing/pricing-section';
 import { FaqSection } from '@/components/landing/faq-section';
 import { FinalCta } from '@/components/landing/final-cta';
 import { LandingFooter } from '@/components/landing/landing-footer';
+import { REDIRECTS } from '@/lib/redirects';
 
 export default function LandingPageContent() {
   return (
@@ -30,7 +31,7 @@ export default function LandingPageContent() {
           <Link href="/platform" className="inline-flex items-center gap-1 rounded-full bg-white/15 px-3 py-1 backdrop-blur-sm transition hover:bg-white/25">
             استكشف المنصة
           </Link>
-          <Link href="/platform/register" className="inline-flex items-center gap-1 rounded-full bg-white px-3 py-1 text-elite-blue-700 transition hover:bg-white/90">
+          <Link href={REDIRECTS.registerUrl} className="inline-flex items-center gap-1 rounded-full bg-white px-3 py-1 text-elite-blue-700 transition hover:bg-white/90">
             سجّل شركتك <ArrowLeft className="h-3 w-3 rtl:-scale-x-100" />
           </Link>
         </p>

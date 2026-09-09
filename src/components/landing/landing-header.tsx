@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import Image from 'next/image';
 import { ArrowUpRight, ArrowLeft, Sparkles, Menu, X, Moon } from 'lucide-react';
+import { REDIRECTS } from '@/lib/redirects';
 
 const navItems = [
   { href: '#platform', label: 'المنصة' },
@@ -105,7 +106,7 @@ export function LandingHeader() {
             <Moon className="h-[1.2rem] w-[1.2rem] transition-transform duration-300" aria-hidden="true" />
             <span className="sr-only">Switch theme</span>
           </button>
-          <Link className="items-center justify-center whitespace-nowrap text-sm font-medium transition-all border bg-background shadow-xs hover:bg-accent hover:text-accent-foreground h-8 gap-1.5 px-3 hidden rounded-xl sm:inline-flex" href="/auth/sign-in">
+          <Link className="items-center justify-center whitespace-nowrap text-sm font-medium transition-all border bg-background shadow-xs hover:bg-accent hover:text-accent-foreground h-8 gap-1.5 px-3 hidden rounded-xl sm:inline-flex" href={REDIRECTS.signInUrl}>
             تسجيل الدخول
           </Link>
           <Link className="items-center justify-center whitespace-nowrap text-sm font-medium transition-all h-8 gap-1.5 px-3 hidden rounded-xl bg-gradient-to-r from-elite-blue-500 to-elite-blue-600 text-white shadow-lg shadow-elite-blue-500/25 duration-300 hover:from-elite-blue-600 hover:to-elite-blue-700 hover:shadow-xl hover:shadow-elite-blue-500/40 hover:scale-[1.02] active:scale-[0.98] sm:inline-flex" href="/platform/register">
@@ -129,7 +130,7 @@ export function LandingHeader() {
             سجّل كسائق
           </a>
           <div className="flex gap-3 pt-4">
-            <Link className="inline-flex items-center justify-center whitespace-nowrap text-sm font-medium transition-all border bg-background shadow-xs hover:bg-accent h-8 gap-1.5 px-3 flex-1 rounded-xl" href="/auth/sign-in">
+            <Link className="inline-flex items-center justify-center whitespace-nowrap text-sm font-medium transition-all border bg-background shadow-xs hover:bg-accent h-8 gap-1.5 px-3 flex-1 rounded-xl" href={REDIRECTS.signInUrl}>
               تسجيل الدخول
             </Link>
             <Link className="inline-flex items-center justify-center whitespace-nowrap text-sm font-medium transition-all h-8 gap-1.5 px-3 flex-1 rounded-xl bg-gradient-to-r from-elite-blue-500 to-elite-blue-600 text-white shadow-lg shadow-elite-blue-500/25" href="/platform/register">

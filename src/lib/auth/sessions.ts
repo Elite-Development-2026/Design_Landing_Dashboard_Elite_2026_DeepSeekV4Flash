@@ -14,6 +14,7 @@ import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { moduleLogger } from "@/lib/logger"
+import { REDIRECTS } from "@/lib/redirects"
 
 type SupabaseSession = {
   access_token: string
@@ -43,18 +44,20 @@ export async function getCurrentSession(): Promise<SupabaseSession | null> {
 }
 
 /**
- * Sign the current user out and redirect to the sign-in page.
+ * Sign the current user out and redirect to the centralized sign-out route.
  *
  * `supabase.auth.signOut()` clears the `sb-*-auth-token` cookies (the SSR
- * client writes expired cookies back via `setAll`). There is no `returnTo` on
- * logout — the user is always sent to /auth/sign-in (auth plan 9.4).
+ * client writes expired cookies back via `setAll`). The redirect goes through
+ * /auth/sign-out, which guarantees the session is cleared and the user lands
+ * on the PUBLIC LANDING page (absolute URL in the two-deployment topology —
+ * acceptance test F).
  *
  * `redirect()` throws internally, so this function never returns.
  */
 export async function signOut(): Promise<void> {
   const supabase = await createClient()
   await supabase.auth.signOut()
-  redirect("/auth/sign-in")
+  redirect(REDIRECTS.signOutUrl)
 }
 
 /**

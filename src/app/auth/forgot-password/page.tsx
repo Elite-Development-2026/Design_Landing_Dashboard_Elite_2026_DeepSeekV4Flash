@@ -6,6 +6,7 @@ import { Mail, MailCheck, Loader2, AlertCircle } from "lucide-react"
 import { LogoMark } from "@/components/logo"
 import { useTranslation } from "@/hooks/use-translation"
 import { createClient } from "@/lib/supabase/client"
+import { REDIRECTS, authCallbackUrlWithReturn } from "@/lib/redirects"
 
 export default function ForgotPasswordPage() {
   const { t } = useTranslation()
@@ -20,10 +21,12 @@ export default function ForgotPasswordPage() {
     setLoading(true)
     try {
       const supabase = createClient()
-      // Send the recovery email; the link redirects to /auth/reset-password
-      // where the code is exchanged for a session (open-redirect-safe:
-      // Next.js only allows same-origin redirectTo values by default).
-      const redirectTo = `${window.location.origin}/auth/reset-password`
+      // Send the recovery email; the link always completes on the DASHBOARD
+      // deployment (where the fresh session cookie is written) via
+      // /auth/confirm?type=recovery → /auth/reset-password. In single-host
+      // mode this is simply this origin. (Supabase only accepts redirectTo
+      // values registered in its Redirect URLs allow-list.)
+      const redirectTo = authCallbackUrlWithReturn()
       const { error: authError } = await supabase.auth.resetPasswordForEmail(
         email.trim(),
         { redirectTo }
@@ -100,7 +103,7 @@ export default function ForgotPasswordPage() {
 
       <div className="stagger-4 text-center text-sm">
         <Link
-          href="/auth/sign-in"
+          href={REDIRECTS.signInUrl}
           className="font-medium text-primary underline underline-offset-4 hover:opacity-80 transition"
         >
           {t.auth.backToSignIn}

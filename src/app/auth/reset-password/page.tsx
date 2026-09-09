@@ -7,6 +7,7 @@ import { Lock, Eye, EyeOff, Loader2, AlertCircle } from "lucide-react"
 import { LogoMark } from "@/components/logo"
 import { useTranslation } from "@/hooks/use-translation"
 import { createClient } from "@/lib/supabase/client"
+import { REDIRECTS } from "@/lib/redirects"
 
 export default function ResetPasswordPage() {
   const { t } = useTranslation()
@@ -41,7 +42,8 @@ export default function ResetPasswordPage() {
       const { error: updateError } = await supabase.auth.updateUser({ password })
       if (updateError) throw new Error(updateError.message)
       setDone(true)
-      setTimeout(() => router.push("/auth/sign-in"), 1200)
+      // Back to sign-in (dashboard deployment in the two-host topology).
+      setTimeout(() => router.push(REDIRECTS.signInUrl), 1200)
     } catch (err) {
       setError(err instanceof Error ? err.message : t.auth.genericError)
     } finally {

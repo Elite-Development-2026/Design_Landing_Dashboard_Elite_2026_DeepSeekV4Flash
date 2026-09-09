@@ -19,15 +19,40 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const stored = localStorage.getItem('tenant');
-    if (stored) {
+    // Hydrate the tenant from the server session (RLS-scoped), falling back
+    // to any locally cached value for instant paint.
+    let active = true;
+
+    async function hydrateTenant() {
+      const stored = localStorage.getItem('tenant');
+      if (stored) {
+        try {
+          const parsed = JSON.parse(stored) as Tenant;
+          if (active) setTenant(parsed);
+        } catch (e) {
+          console.error('Failed to parse tenant:', e);
+        }
+      }
+
       try {
-        setTenant(JSON.parse(stored));
-      } catch (e) {
-        console.error('Failed to parse tenant:', e);
+        const res = await fetch('/api/platform/me');
+        if (!res.ok) throw new Error('unauthenticated');
+        const data = (await res.json()) as { tenant: Tenant | null };
+        if (data.tenant) {
+          if (active) setTenant(data.tenant);
+          localStorage.setItem('tenant', JSON.stringify(data.tenant));
+        }
+      } catch {
+        // Keep the cached/localStorage value if any; the proxy guards the route.
+      } finally {
+        if (active) setLoading(false);
       }
     }
-    setLoading(false);
+
+    void hydrateTenant();
+    return () => {
+      active = false;
+    };
   }, []);
 
   if (loading) {

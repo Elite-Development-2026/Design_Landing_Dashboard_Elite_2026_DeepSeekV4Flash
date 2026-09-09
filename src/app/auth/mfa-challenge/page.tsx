@@ -14,6 +14,7 @@ import { useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
 import { createClient } from "@/lib/supabase/client"
 import { useTranslation } from "@/hooks/use-translation"
+import { REDIRECTS, DASHBOARD_PATH, safeReturnPath } from "@/lib/redirects"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -24,6 +25,10 @@ export default function MfaChallengePage() {
   const router = useRouter()
   const { locale } = useTranslation()
   const ar = locale === "ar"
+  // The dashboard destination (absolute under the two-deployment topology).
+  const dashboardUrl = safeReturnPath(
+    new URLSearchParams(window.location.search).get("returnTo") ?? DASHBOARD_PATH
+  )
 
   const [factorId, setFactorId] = useState<string | null>(null)
   const [code, setCode] = useState("")
@@ -48,14 +53,14 @@ export default function MfaChallengePage() {
 
       // Already elevated, or no verified factor → nothing to challenge.
       if (aalError || !aal || aal.currentLevel === "aal2" || aal.nextLevel !== "aal2") {
-        router.replace("/dashboard")
+        router.replace(dashboardUrl)
         return
       }
 
       const { data: factors } = await supabase.auth.mfa.listFactors()
       const verified = factors?.totp?.find((f) => f.status === "verified")
       if (!verified) {
-        router.replace("/dashboard")
+        router.replace(dashboardUrl)
         return
       }
 
@@ -98,14 +103,16 @@ export default function MfaChallengePage() {
       return
     }
 
-    router.replace("/dashboard")
+    router.replace(dashboardUrl)
     router.refresh()
   }
 
   async function handleSignOut() {
     const supabase = createClient()
     await supabase.auth.signOut()
-    router.replace("/auth/sign-in")
+    // Full-page nav to the centralized sign-out route → clears cookies and
+    // lands on the public landing page.
+    window.location.href = REDIRECTS.signOutUrl
   }
 
   if (isLoading) {

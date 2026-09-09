@@ -3,6 +3,7 @@
 import { Button } from "@/components/ui/button"
 import { useRouter } from "next/navigation"
 import Image from "next/image"
+import { REDIRECTS } from "@/lib/redirects"
 
 export function UnauthorizedError() {
   const router = useRouter()
@@ -21,7 +22,7 @@ export function UnauthorizedError() {
         <h2 className="mb-3 text-2xl font-semibold">Unauthorized</h2>
         <p>You don&apos;t have permission to access this resource. Please sign in or contact your administrator.</p>
         <div className='mt-6 flex items-center justify-center gap-4 md:mt-8'>
-          <Button className='cursor-pointer' onClick={() => router.push('/dashboard')}>Go Back Home</Button>
+          <Button className='cursor-pointer' onClick={() => router.push(REDIRECTS.dashboardUrl)}>Go Back Home</Button>
           <Button variant='outline' className='flex cursor-pointer items-center gap-1' onClick={() => router.push('#')}>
             Contact Us
           </Button>
