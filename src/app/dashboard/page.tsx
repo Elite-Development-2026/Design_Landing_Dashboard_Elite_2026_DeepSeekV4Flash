@@ -5,22 +5,13 @@ import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
 import {
   AlertCircle,
-  ArrowDownRight,
   ArrowUpRight,
-  DollarSign,
+  Building2,
   RefreshCw,
-  TrendingUp,
-  Truck,
+  ShieldCheck,
+  UserPlus,
   Users,
 } from 'lucide-react';
-
-interface RecentDriver {
-  id: string;
-  full_name_en: string | null;
-  full_name_ar: string | null;
-  status: string | null;
-  created_at: string | null;
-}
 
 interface Tenant {
   id: string;
@@ -30,35 +21,57 @@ interface Tenant {
   slug: string;
 }
 
+interface Company {
+  id: string;
+  name_en: string | null;
+  name_ar: string | null;
+  slug: string | null;
+  status: string | null;
+  plan: string | null;
+  billing_status?: string | null;
+  created_at: string | null;
+  users_count: number;
+}
+
+interface PlatformUser {
+  id: string;
+  email: string | null;
+  full_name_en: string | null;
+  full_name_ar: string | null;
+  role: string | null;
+  status: string | null;
+  created_at: string | null;
+  last_login_at: string | null;
+  company_name: string | null;
+}
+
 interface DashboardStats {
-  drivers: number;
-  vehicles: number;
-  monthIncome: number;
-  monthExpenses: number;
+  companies: number;
+  activeCompanies: number;
+  users: number;
+  activeUsers: number;
 }
 
 const INITIAL_STATS: DashboardStats = {
-  drivers: 0,
-  vehicles: 0,
-  monthIncome: 0,
-  monthExpenses: 0,
+  companies: 0,
+  activeCompanies: 0,
+  users: 0,
+  activeUsers: 0,
 };
 
-function formatSar(amount: number) {
-  return `${amount.toLocaleString('en-SA', {
-    maximumFractionDigits: 0,
-  })} SAR`;
+function companyName(company: Company) {
+  return company.name_en || company.name_ar || 'Unnamed company';
 }
 
-function driverName(driver: RecentDriver) {
-  return driver.full_name_en || driver.full_name_ar || 'Unnamed driver';
+function userName(user: PlatformUser) {
+  return user.full_name_en || user.full_name_ar || user.email || 'Unnamed user';
 }
 
 function formatDate(value: string | null) {
-  if (!value) return 'Recently added';
+  if (!value) return '—';
 
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return 'Recently added';
+  if (Number.isNaN(date.getTime())) return '—';
 
   return date.toLocaleDateString('en-SA', {
     day: 'numeric',
@@ -73,7 +86,8 @@ export default function DashboardPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [stats, setStats] = useState<DashboardStats>(INITIAL_STATS);
-  const [recentDrivers, setRecentDrivers] = useState<RecentDriver[]>([]);
+  const [recentCompanies, setRecentCompanies] = useState<Company[]>([]);
+  const [recentUsers, setRecentUsers] = useState<PlatformUser[]>([]);
 
   useEffect(() => {
     try {
@@ -91,64 +105,42 @@ export default function DashboardPage() {
     setError(null);
 
     try {
+      // Confirm the session is alive (RLS-scoped), then load the
+      // customers-and-users overview from the platform admin API.
       const supabase = createClient();
-      const monthStart = new Date();
-      monthStart.setHours(0, 0, 0, 0);
-      monthStart.setDate(1);
-      const monthStartStr = monthStart.toISOString().slice(0, 10);
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('unauthenticated');
 
-      const [driversRes, vehiclesRes, invoicesRes, expensesRes, recentRes] = await Promise.all([
-        supabase
-          .from('drivers')
-          .select('id', { count: 'exact', head: true })
-          .is('deleted_at', null),
-        supabase
-          .from('vehicles')
-          .select('id', { count: 'exact', head: true })
-          .is('deleted_at', null),
-        supabase
-          .from('invoices')
-          .select('total')
-          .is('deleted_at', null)
-          .gte('issue_date', monthStartStr),
-        supabase
-          .from('expenses')
-          .select('amount')
-          .is('deleted_at', null)
-          .gte('expense_date', monthStartStr),
-        supabase
-          .from('drivers')
-          .select('id, full_name_en, full_name_ar, status, created_at')
-          .is('deleted_at', null)
-          .order('created_at', { ascending: false })
-          .limit(4),
+      const [companiesRes, usersRes] = await Promise.all([
+        fetch('/api/platform/admin/companies'),
+        fetch('/api/platform/admin/users'),
       ]);
 
-      const queryError = [driversRes, vehiclesRes, invoicesRes, expensesRes, recentRes]
-        .map((result) => result.error)
-        .find(Boolean);
+      if (!companiesRes.ok || !usersRes.ok) {
+        throw new Error('forbidden');
+      }
 
-      if (queryError) throw queryError;
+      const companiesData = (await companiesRes.json()) as { companies: Company[] };
+      const usersData = (await usersRes.json()) as { users: PlatformUser[] };
 
-      const monthIncome = (invoicesRes.data ?? []).reduce(
-        (sum, row: { total?: number | string | null }) => sum + (Number(row.total) || 0),
-        0,
-      );
-      const monthExpenses = (expensesRes.data ?? []).reduce(
-        (sum, row: { amount?: number | string | null }) => sum + (Number(row.amount) || 0),
-        0,
-      );
+      const companies = companiesData.companies ?? [];
+      const users = usersData.users ?? [];
 
       setStats({
-        drivers: driversRes.count ?? 0,
-        vehicles: vehiclesRes.count ?? 0,
-        monthIncome,
-        monthExpenses,
+        companies: companies.length,
+        activeCompanies: companies.filter((c) => c.status === 'active').length,
+        users: users.length,
+        activeUsers: users.filter((u) => u.status === 'active').length,
       });
-      setRecentDrivers((recentRes.data ?? []) as RecentDriver[]);
+      setRecentCompanies(companies.slice(0, 5));
+      setRecentUsers(users.slice(0, 5));
     } catch (cause) {
       console.error('Unable to load dashboard data:', cause);
-      setError('We could not load your fleet data. Check your connection and try again.');
+      setError(
+        cause instanceof Error && cause.message === 'unauthenticated'
+          ? 'Your session has expired. Please sign in again.'
+          : 'We could not load the customers and users overview. You may not have platform admin access, or the service is unavailable.',
+      );
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -159,41 +151,36 @@ export default function DashboardPage() {
     void loadDashboard();
   }, []);
 
-  const netPosition = stats.monthIncome - stats.monthExpenses;
-  const totalCashflow = stats.monthIncome + stats.monthExpenses;
-  const incomeShare = totalCashflow > 0 ? (stats.monthIncome / totalCashflow) * 100 : 0;
-  const expenseShare = totalCashflow > 0 ? (stats.monthExpenses / totalCashflow) * 100 : 0;
-
   const metrics = [
     {
-      title: 'Revenue this month',
-      value: formatSar(stats.monthIncome),
-      icon: DollarSign,
+      title: 'Total companies',
+      value: stats.companies.toLocaleString('en-SA'),
+      icon: Building2,
       positive: true,
-      helper: 'Issued invoices this month',
+      helper: `${stats.activeCompanies} active`,
+      href: '/platform/admin',
     },
     {
-      title: 'Expenses this month',
-      value: formatSar(stats.monthExpenses),
-      icon: TrendingUp,
-      positive: stats.monthExpenses <= stats.monthIncome,
-      helper: 'Recorded expenses this month',
-    },
-    {
-      title: 'Total drivers',
-      value: stats.drivers.toLocaleString('en-SA'),
+      title: 'Total users',
+      value: stats.users.toLocaleString('en-SA'),
       icon: Users,
       positive: true,
-      helper: 'Active driver records',
-      href: '/drivers',
+      helper: `${stats.activeUsers} active`,
+      href: '/platform/admin',
     },
     {
-      title: 'Total vehicles',
-      value: stats.vehicles.toLocaleString('en-SA'),
-      icon: Truck,
+      title: 'Active companies',
+      value: stats.activeCompanies.toLocaleString('en-SA'),
+      icon: ShieldCheck,
       positive: true,
-      helper: 'Active vehicle records',
-      href: '/vehicles',
+      helper: 'Currently subscribed customers',
+    },
+    {
+      title: 'Active users',
+      value: stats.activeUsers.toLocaleString('en-SA'),
+      icon: UserPlus,
+      positive: true,
+      helper: 'Users who can sign in today',
     },
   ];
 
@@ -218,12 +205,12 @@ export default function DashboardPage() {
     <div className="space-y-6">
       <section className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <p className="text-sm font-medium text-blue-300">Fleet overview</p>
+          <p className="text-sm font-medium text-blue-300">Customers &amp; users</p>
           <h1 className="mt-1 text-3xl font-bold tracking-tight text-white">
             Welcome back{tenant?.name ? `, ${tenant.name}` : ''}
           </h1>
           <p className="mt-2 text-sm text-white/60">
-            Here is what is happening across your fleet this month.
+            Here is what is happening across your customers and their users.
           </p>
         </div>
         <button
@@ -262,9 +249,7 @@ export default function DashboardPage() {
                 <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-blue-500/10">
                   <Icon className="h-5 w-5 text-blue-300" />
                 </div>
-                <div className={`flex items-center gap-1 text-xs font-semibold ${metric.positive ? 'text-emerald-300' : 'text-red-300'}`}>
-                  {metric.positive ? <ArrowUpRight className="h-4 w-4" /> : <ArrowDownRight className="h-4 w-4" />}
-                </div>
+                <ArrowUpRight className="h-4 w-4 text-emerald-300" />
               </div>
               <p className="mt-5 text-2xl font-bold tracking-tight text-white">{metric.value}</p>
               <p className="mt-1 text-sm font-medium text-white/75">{metric.title}</p>
@@ -273,7 +258,7 @@ export default function DashboardPage() {
           );
 
           return metric.href ? (
-            <Link key={metric.title} href={metric.href} className="block focus:outline-none focus:ring-2 focus:ring-blue-400/70 focus:ring-offset-2 focus:ring-offset-slate-950 rounded-2xl">
+            <Link key={metric.title} href={metric.href} className="block rounded-2xl focus:outline-none focus:ring-2 focus:ring-blue-400/70 focus:ring-offset-2 focus:ring-offset-slate-950">
               {content}
             </Link>
           ) : (
@@ -286,36 +271,35 @@ export default function DashboardPage() {
         <div className="rounded-2xl border border-white/10 bg-slate-800/50 p-6 backdrop-blur-sm">
           <div className="flex items-center justify-between gap-4">
             <div>
-              <h2 className="text-lg font-semibold text-white">Latest drivers</h2>
-              <p className="mt-1 text-sm text-white/50">Most recently added driver records</p>
+              <h2 className="text-lg font-semibold text-white">Latest companies</h2>
+              <p className="mt-1 text-sm text-white/50">Most recently onboarded customers</p>
             </div>
-            <Link href="/drivers" className="text-sm font-semibold text-blue-300 transition hover:text-blue-200">
+            <Link href="/platform/admin" className="text-sm font-semibold text-blue-300 transition hover:text-blue-200">
               View all
             </Link>
           </div>
 
-          {recentDrivers.length === 0 ? (
+          {recentCompanies.length === 0 ? (
             <div className="flex min-h-48 flex-col items-center justify-center rounded-xl border border-dashed border-white/10 bg-white/[0.02] px-4 text-center">
-              <Users className="h-10 w-10 text-white/25" />
-              <p className="mt-3 text-sm font-medium text-white/70">No drivers yet</p>
-              <p className="mt-1 text-sm text-white/40">Add your first driver to begin managing your fleet.</p>
-              <Link href="/drivers" className="mt-4 rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white transition hover:bg-blue-500">
-                Add driver
-              </Link>
+              <Building2 className="h-10 w-10 text-white/25" />
+              <p className="mt-3 text-sm font-medium text-white/70">No companies yet</p>
+              <p className="mt-1 text-sm text-white/40">Onboard your first customer to get started.</p>
             </div>
           ) : (
             <div className="mt-5 space-y-3">
-              {recentDrivers.map((driver) => (
-                <div key={driver.id} className="flex items-center gap-3 rounded-xl border border-white/5 bg-white/[0.03] p-3.5">
+              {recentCompanies.map((company) => (
+                <div key={company.id} className="flex items-center gap-3 rounded-xl border border-white/5 bg-white/[0.03] p-3.5">
                   <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-blue-500/15 text-sm font-bold text-blue-200">
-                    {driverName(driver).slice(0, 1).toUpperCase()}
+                    {companyName(company).slice(0, 1).toUpperCase()}
                   </div>
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-semibold text-white">{driverName(driver)}</p>
-                    <p className="mt-0.5 text-xs text-white/45">Added {formatDate(driver.created_at)}</p>
+                    <p className="truncate text-sm font-semibold text-white">{companyName(company)}</p>
+                    <p className="mt-0.5 text-xs text-white/45">
+                      Added {formatDate(company.created_at)} · {company.users_count} user{company.users_count === 1 ? '' : 's'}
+                    </p>
                   </div>
                   <span className="rounded-full bg-blue-500/10 px-2.5 py-1 text-xs font-medium capitalize text-blue-200">
-                    {driver.status || 'Pending'}
+                    {company.status || 'pending'}
                   </span>
                 </div>
               ))}
@@ -324,47 +308,42 @@ export default function DashboardPage() {
         </div>
 
         <div className="rounded-2xl border border-white/10 bg-slate-800/50 p-6 backdrop-blur-sm">
-          <div>
-            <h2 className="text-lg font-semibold text-white">Net position</h2>
-            <p className="mt-1 text-sm text-white/50">Income and expenses for the current month</p>
-          </div>
-
-          <div className="mt-7 flex items-end gap-2">
-            <span className={`text-4xl font-bold tracking-tight ${netPosition >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>
-              {netPosition.toLocaleString('en-SA', { maximumFractionDigits: 0 })}
-            </span>
-            <span className="mb-1 text-sm font-medium text-white/45">SAR</span>
-          </div>
-
-          <div className="mt-7 space-y-5">
+          <div className="flex items-center justify-between gap-4">
             <div>
-              <div className="mb-2 flex items-center justify-between gap-4 text-sm">
-                <span className="text-white/70">Income</span>
-                <span className="font-semibold text-emerald-300">{formatSar(stats.monthIncome)}</span>
-              </div>
-              <div className="h-2 overflow-hidden rounded-full bg-white/10">
-                <div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${incomeShare}%` }} />
-              </div>
+              <h2 className="text-lg font-semibold text-white">Latest users</h2>
+              <p className="mt-1 text-sm text-white/50">Most recently created accounts</p>
             </div>
-            <div>
-              <div className="mb-2 flex items-center justify-between gap-4 text-sm">
-                <span className="text-white/70">Expenses</span>
-                <span className="font-semibold text-red-300">{formatSar(stats.monthExpenses)}</span>
-              </div>
-              <div className="h-2 overflow-hidden rounded-full bg-white/10">
-                <div className="h-full rounded-full bg-red-500 transition-all" style={{ width: `${expenseShare}%` }} />
-              </div>
-            </div>
+            <Link href="/platform/admin" className="text-sm font-semibold text-blue-300 transition hover:text-blue-200">
+              View all
+            </Link>
           </div>
 
-          <div className="mt-7 rounded-xl border border-white/5 bg-white/[0.03] p-4">
-            <p className="text-xs font-medium uppercase tracking-wide text-white/40">Monthly summary</p>
-            <p className="mt-1 text-sm text-white/70">
-              {netPosition >= 0
-                ? 'Your income currently exceeds recorded expenses.'
-                : 'Recorded expenses currently exceed issued-invoice revenue.'}
-            </p>
-          </div>
+          {recentUsers.length === 0 ? (
+            <div className="flex min-h-48 flex-col items-center justify-center rounded-xl border border-dashed border-white/10 bg-white/[0.02] px-4 text-center">
+              <Users className="h-10 w-10 text-white/25" />
+              <p className="mt-3 text-sm font-medium text-white/70">No users yet</p>
+              <p className="mt-1 text-sm text-white/40">Invite the first user to begin collaborating.</p>
+            </div>
+          ) : (
+            <div className="mt-5 space-y-3">
+              {recentUsers.map((user) => (
+                <div key={user.id} className="flex items-center gap-3 rounded-xl border border-white/5 bg-white/[0.03] p-3.5">
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-emerald-500/15 text-sm font-bold text-emerald-200">
+                    {userName(user).slice(0, 1).toUpperCase()}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-semibold text-white">{userName(user)}</p>
+                    <p className="mt-0.5 truncate text-xs text-white/45">
+                      {user.company_name ?? '—'} · {formatDate(user.created_at)}
+                    </p>
+                  </div>
+                  <span className="max-w-32 truncate rounded-full bg-blue-500/10 px-2.5 py-1 text-xs font-medium text-blue-200">
+                    {(user.role || 'member').replace(/_/g, ' ')}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </section>
     </div>
