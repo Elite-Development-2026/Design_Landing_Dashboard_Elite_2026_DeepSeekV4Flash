@@ -39,6 +39,19 @@ const SETTINGS_ROLE_GUARDS: Record<string, string[]> = {
 }
 
 export async function proxy(request: NextRequest) {
+  // "/landing" is ONLY intercepted on the dashboard deployment (requirement E:
+  // authenticated visitors of /landing → /dashboard; logged-out visitors →
+  // the canonical public landing URL). On the landing deployment /landing IS
+  // the public page and must never be intercepted. The matcher below always
+  // includes "/landing" because Next 16 requires a fully static matcher —
+  // so the deployment-role decision happens here at request time instead.
+  if (
+    request.nextUrl.pathname === "/landing" &&
+    !(IS_MULTI_DEPLOYMENT && process.env.DEPLOYMENT_ROLE === "dashboard")
+  ) {
+    return NextResponse.next()
+  }
+
   const requestId = crypto.randomUUID()
   const response = NextResponse.next({ request })
   response.headers.set("X-Request-ID", requestId)
@@ -229,12 +242,9 @@ export const config = {
     "/audit-log/:path*",
     "/security/:path*",
     "/settings/:path*",
-    // "/landing" is ONLY matched on the dashboard deployment (requirement E:
-    // authenticated visitors of /landing → /dashboard; logged-out visitors →
-    // the canonical public landing URL). On the landing deployment /landing
-    // IS the public page and must never be intercepted.
-    ...(IS_MULTI_DEPLOYMENT && process.env.DEPLOYMENT_ROLE === "dashboard"
-      ? ["/landing"]
-      : []),
+    // "/landing" must stay in the matcher unconditionally: Next 16 requires
+    // the matcher to be statically parseable (no runtime spreads/env checks).
+    // Whether it is actually enforced is decided at the top of proxy().
+    "/landing",
   ],
 }
