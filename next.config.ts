@@ -121,6 +121,49 @@ const nextConfig: NextConfig = {
         destination: '/dashboard',
         permanent: true,
       },
+      // Legacy /dashboard/* module URLs (unified dashboard tree was retired in
+      // favour of the grouped (dashboard) route group) — map old paths to the
+      // matching module routes so existing bookmarks keep working.
+      {
+        source: '/dashboard/analytics',
+        destination: '/reports',
+        permanent: true,
+      },
+      {
+        source: '/dashboard/drivers',
+        destination: '/drivers',
+        permanent: true,
+      },
+      {
+        source: '/dashboard/vehicles',
+        destination: '/vehicles',
+        permanent: true,
+      },
+      {
+        source: '/dashboard/accounting',
+        destination: '/accounting',
+        permanent: true,
+      },
+      {
+        source: '/dashboard/reports',
+        destination: '/reports',
+        permanent: true,
+      },
+      {
+        source: '/dashboard/team',
+        destination: '/users',
+        permanent: true,
+      },
+      {
+        source: '/dashboard/api-keys',
+        destination: '/security',
+        permanent: true,
+      },
+      {
+        source: '/dashboard/settings',
+        destination: '/settings',
+        permanent: true,
+      },
     ];
   },
 };
