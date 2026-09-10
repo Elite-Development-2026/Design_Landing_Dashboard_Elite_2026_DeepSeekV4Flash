@@ -1,6 +1,7 @@
 'use client';
 
 import { Bell, Search, User, LogOut } from 'lucide-react';
+import { REDIRECTS } from '@/lib/redirects';
 
 interface Tenant {
   id: string;
@@ -17,7 +18,9 @@ interface HeaderProps {
 export default function Header({ tenant }: HeaderProps) {
   const handleLogout = () => {
     localStorage.removeItem('tenant');
-    window.location.href = '/platform/login';
+    // Centralized sign-out: clears the Supabase session, then → the public
+    // landing page (absolute URL in the two-deployment topology).
+    window.location.href = REDIRECTS.signOutUrl;
   };
 
   return (

@@ -10,20 +10,27 @@
 // Enforcement note: src/proxy.ts should redirect aal1 sessions that have a
 // verified factor (or a privileged role) to this page — see PR #1 / FIX-04.
 
-import { useEffect, useState } from "react"
-import { useRouter } from "next/navigation"
+import { useEffect, useState, Suspense } from "react"
+import { useRouter, useSearchParams } from "next/navigation"
 import { createClient } from "@/lib/supabase/client"
 import { useTranslation } from "@/hooks/use-translation"
+import { REDIRECTS, DASHBOARD_PATH, safeReturnPath } from "@/lib/redirects"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { LoadingSpinner } from "@/components/ui/loading-spinner"
 import { ShieldCheck, AlertTriangle, LogOut } from "lucide-react"
 
-export default function MfaChallengePage() {
+function MfaChallengeContent() {
   const router = useRouter()
+  const searchParams = useSearchParams()
   const { locale } = useTranslation()
   const ar = locale === "ar"
+  // The dashboard destination (absolute under the two-deployment topology).
+  // useSearchParams() is SSR/prerender-safe (window is not available on the server).
+  const dashboardUrl = safeReturnPath(
+    searchParams.get("returnTo") ?? DASHBOARD_PATH
+  )
 
   const [factorId, setFactorId] = useState<string | null>(null)
   const [code, setCode] = useState("")
@@ -48,14 +55,14 @@ export default function MfaChallengePage() {
 
       // Already elevated, or no verified factor → nothing to challenge.
       if (aalError || !aal || aal.currentLevel === "aal2" || aal.nextLevel !== "aal2") {
-        router.replace("/dashboard")
+        router.replace(dashboardUrl)
         return
       }
 
       const { data: factors } = await supabase.auth.mfa.listFactors()
       const verified = factors?.totp?.find((f) => f.status === "verified")
       if (!verified) {
-        router.replace("/dashboard")
+        router.replace(dashboardUrl)
         return
       }
 
@@ -98,14 +105,16 @@ export default function MfaChallengePage() {
       return
     }
 
-    router.replace("/dashboard")
+    router.replace(dashboardUrl)
     router.refresh()
   }
 
   async function handleSignOut() {
     const supabase = createClient()
     await supabase.auth.signOut()
-    router.replace("/auth/sign-in")
+    // Full-page nav to the centralized sign-out route → clears cookies and
+    // lands on the public landing page.
+    window.location.href = REDIRECTS.signOutUrl
   }
 
   if (isLoading) {
@@ -185,5 +194,19 @@ export default function MfaChallengePage() {
         </CardContent>
       </Card>
     </div>
+  )
+}
+
+export default function MfaChallengePage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex min-h-screen items-center justify-center bg-background">
+          <LoadingSpinner className="h-6 w-6 text-elite-blue-600" />
+        </div>
+      }
+    >
+      <MfaChallengeContent />
+    </Suspense>
   )
 }

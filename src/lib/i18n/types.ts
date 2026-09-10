@@ -95,6 +95,8 @@ export type TranslationStrings = {
     showPassword: string
     hidePassword: string
     termsPrivacy: string
+    registrationSuccessTitle: string
+    registrationSuccessBody: string
   }
   common: {
     addNew: string

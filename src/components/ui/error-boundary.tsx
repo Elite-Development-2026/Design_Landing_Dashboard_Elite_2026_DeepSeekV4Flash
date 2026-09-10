@@ -5,6 +5,7 @@ import { AlertTriangle, RefreshCcw, Home } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { useTranslation } from "@/hooks/use-translation"
+import { REDIRECTS } from "@/lib/redirects"
 
 interface ErrorBoundaryState {
   hasError: boolean
@@ -89,7 +90,7 @@ function DefaultErrorFallback({ error, retry }: { error: Error; retry: () => voi
             {t.common.retry}
           </Button>
           <Button
-            onClick={() => window.location.href = "/dashboard"}
+            onClick={() => window.location.href = REDIRECTS.dashboardUrl}
             variant="outline"
             size="sm"
             className="gap-2 rounded-xl"

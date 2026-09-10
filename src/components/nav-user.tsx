@@ -26,6 +26,7 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar"
 import { useTranslation } from "@/hooks/use-translation"
+import { REDIRECTS } from "@/lib/redirects"
 
 export function NavUser({
   user,
@@ -98,10 +99,14 @@ export function NavUser({
             </DropdownMenuGroup>
             <DropdownMenuSeparator />
             <DropdownMenuItem asChild className="cursor-pointer rounded-lg text-red-600 dark:text-red-400">
-              <Link href="/auth/sign-in" className="flex items-center gap-2">
+              {/* Full-page navigation to the centralized sign-out route: it
+                  clears the Supabase session and lands on the public landing
+                  page (acceptance test F). A client <Link> would race the
+                  sidebar's client-side router against cookie clearing. */}
+              <a href={REDIRECTS.signOutUrl} className="flex items-center gap-2">
                 <LogOut className="h-4 w-4" />
                 {t.nav.signOut}
-              </Link>
+              </a>
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>

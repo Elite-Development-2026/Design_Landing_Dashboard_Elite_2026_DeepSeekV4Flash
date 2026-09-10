@@ -1,6 +1,7 @@
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { FileQuestion } from "lucide-react"
+import { REDIRECTS } from "@/lib/redirects"
 
 export default function NotFound() {
   return (
@@ -16,7 +17,9 @@ export default function NotFound() {
           Page not found
         </p>
         <Button asChild className="mt-4">
-          <Link href="/dashboard" aria-label="Go to Dashboard">
+          {/* Centralized destination — absolute (dashboard deployment) in the
+              two-host production topology. */}
+          <Link href={REDIRECTS.dashboardUrl} aria-label="Go to Dashboard">
             Go to Dashboard
           </Link>
         </Button>

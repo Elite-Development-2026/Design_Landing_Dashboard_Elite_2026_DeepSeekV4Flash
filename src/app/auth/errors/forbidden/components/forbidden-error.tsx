@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button"
 import { useRouter } from "next/navigation"
 import { ShieldAlert } from "lucide-react"
 import { useTranslation } from "@/hooks/use-translation"
+import { REDIRECTS } from "@/lib/redirects"
 
 export function ForbiddenError() {
   const router = useRouter()
@@ -26,7 +27,7 @@ export function ForbiddenError() {
         <div className="mt-6 flex items-center justify-center gap-4 md:mt-8">
           <Button
             className="cursor-pointer"
-            onClick={() => router.push("/dashboard")}
+            onClick={() => router.push(REDIRECTS.dashboardUrl)}
             aria-label={t.errors.forbiddenGoHome}
           >
             {t.errors.forbiddenGoHome}
@@ -34,7 +35,7 @@ export function ForbiddenError() {
           <Button
             variant="outline"
             className="flex cursor-pointer items-center gap-1"
-            onClick={() => router.push("/auth/sign-in")}
+            onClick={() => router.push(REDIRECTS.signInUrl)}
             aria-label={t.errors.forbiddenContactUs}
           >
             {t.errors.forbiddenContactUs}

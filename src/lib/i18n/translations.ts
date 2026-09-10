@@ -96,6 +96,8 @@ export const translations: Record<string, TranslationStrings> = {
       showPassword: "إظهار كلمة المرور",
       hidePassword: "إخفاء كلمة المرور",
       termsPrivacy: "بالضغط على متابعة، أنت توافق على شروط الخدمة وسياسة الخصوصية.",
+      registrationSuccessTitle: "تم إنشاء مساحة عمل شركتك",
+      registrationSuccessBody: "كل شيء جاهز — سجّل الدخول الآن بكلمة المرور التي أنشأتها أثناء التسجيل.",
     },
     common: {
       addNew: "إضافة جديد",
@@ -660,6 +662,8 @@ export const translations: Record<string, TranslationStrings> = {
       showPassword: "Show password",
       hidePassword: "Hide password",
       termsPrivacy: "By clicking continue, you agree to our Terms of Service and Privacy Policy.",
+      registrationSuccessTitle: "Your company workspace is ready",
+      registrationSuccessBody: "Everything is set up — sign in now with the password you created during registration.",
     },
     common: {
       addNew: "Add New",
