@@ -128,11 +128,21 @@ const nextConfig: NextConfig = {
     // Single-host mode (DEPLOYMENT_ROLE unset): local dev, previews, sandbox.
     // Everything stays same-origin — no cross-deployment rules.
     if (!DEPLOYMENT_ROLE) {
-      return [
-        { source: '/', destination: LANDING_PATH, permanent: true },
-        { source: '/login', destination: '/auth/sign-in', permanent: false },
-        { source: '/register', destination: '/platform/register', permanent: false },
-        { source: '/home', destination: DASHBOARD_PATH_FALLBACK, permanent: true },
+      return [      { source: '/', destination: LANDING_PATH, permanent: true },
+      { source: '/login', destination: '/auth/sign-in', permanent: false },
+      { source: '/register', destination: '/platform/register', permanent: false },
+      { source: '/home', destination: DASHBOARD_PATH_FALLBACK, permanent: true },
+      // Legacy /dashboard/* module URLs (unified dashboard tree was retired in
+      // favour of the grouped (dashboard) route group) — map old paths to the
+      // matching module routes so existing bookmarks keep working.
+      { source: '/dashboard/analytics', destination: '/reports', permanent: true },
+      { source: '/dashboard/drivers', destination: '/drivers', permanent: true },
+      { source: '/dashboard/vehicles', destination: '/vehicles', permanent: true },
+      { source: '/dashboard/accounting', destination: '/accounting', permanent: true },
+      { source: '/dashboard/reports', destination: '/reports', permanent: true },
+      { source: '/dashboard/team', destination: '/users', permanent: true },
+      { source: '/dashboard/api-keys', destination: '/security', permanent: true },
+      { source: '/dashboard/settings', destination: '/settings', permanent: true },
       ]
     }
 
@@ -217,6 +227,17 @@ const nextConfig: NextConfig = {
       { source: '/login', destination: '/auth/sign-in', permanent: false },
       { source: '/register', destination: '/platform/register', permanent: false },
       { source: '/home', destination: DASHBOARD_URL, permanent: true },
+      // Legacy /dashboard/* module URLs (unified dashboard tree was retired in
+      // favour of the grouped (dashboard) route group) — map old paths to the
+      // matching module routes so existing bookmarks keep working.
+      { source: '/dashboard/analytics', destination: '/reports', permanent: true },
+      { source: '/dashboard/drivers', destination: '/drivers', permanent: true },
+      { source: '/dashboard/vehicles', destination: '/vehicles', permanent: true },
+      { source: '/dashboard/accounting', destination: '/accounting', permanent: true },
+      { source: '/dashboard/reports', destination: '/reports', permanent: true },
+      { source: '/dashboard/team', destination: '/users', permanent: true },
+      { source: '/dashboard/api-keys', destination: '/security', permanent: true },
+      { source: '/dashboard/settings', destination: '/settings', permanent: true },
     ]
   },
 };

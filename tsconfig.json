@@ -38,6 +38,7 @@
   ],
   "exclude": [
     "node_modules",
-    "deepseek_package_0_build_repair"
+    "deepseek_package_0_build_repair",
+    "Design_Landing_Dashboard_Elite_2026_DeepSeekV4Flash"
   ]
 }
