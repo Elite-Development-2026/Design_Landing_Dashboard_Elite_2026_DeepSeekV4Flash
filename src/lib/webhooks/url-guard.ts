@@ -7,7 +7,7 @@
 //   2. blocklists known cloud-metadata hostnames,
 //   3. resolves the hostname with dns.lookup(all) and rejects if ANY
 //      resolved address is private / loopback / link-local / reserved
-//      (IPv4 and IPv6, including IPv4-mapped and NAT64/6to4-embedded IPv4).
+//      (IPv4 and IPv6, including IPv4-mapped and NAT64-embedded IPv4).
 //
 // The dispatcher follows redirects with `redirect: "manual"` and re-validates
 // EVERY Location hop through assertSafeWebhookUrl.
@@ -146,10 +146,10 @@ function isBlockedIPv6(expanded: string): boolean {
   if (expanded.startsWith("0064ff9b") && expanded.slice(8, 24) === "0000000000000000") {
     return isBlockedAddress(embeddedIPv4(expanded))
   }
-  // 2002::/16 — 6to4 → check the embedded IPv4
-  if (expanded.startsWith("2002")) {
-    return isBlockedAddress(embeddedIPv4(expanded))
-  }
+  // 2002::/16 — 6to4 (deprecated): block outright. The embedded IPv4 sits at
+  // hex offset 4-12, not the last 32 bits, so extraction here is error-prone
+  // for no benefit — no legitimate webhook target uses 6to4.
+  if (expanded.startsWith("2002")) return true
   // 100::/64 — discard-only
   if (expanded.startsWith("0100000000000000")) return true
   // 2001::/32 — Teredo
@@ -168,7 +168,7 @@ function isBlockedIPv6(expanded: string): boolean {
 }
 
 /**
- * True when the IP address (v4 or v6) falls in a blocked
+ * True when the (expanded) IPv6 address (v4 or v6) falls in a blocked
  * private/loopback/link-local/reserved range. Unknown formats fail CLOSED.
  */
 export function isBlockedAddress(ip: string): boolean {
