@@ -18,7 +18,6 @@ import crypto from "crypto"
 import { moduleLogger, logPerformance } from "@/lib/logger"
 import {
   type WebhookEvent,
-  type WebhookEventType,
   type WebhookRegistration,
   type DispatchEventInput,
   type WebhookDelivery,
@@ -32,8 +31,12 @@ import {
   getPendingRetries,
   calculateNextRetryAt,
 } from "./store"
+import { assertSafeWebhookUrl } from "./url-guard"
 
 const log = moduleLogger("webhooks/dispatcher")
+
+/** Redirect hops followed per delivery — every hop is SSRF-re-validated. */
+const MAX_REDIRECT_HOPS = 3
 
 // ── Event Emission ─────────────────────────────────────────────────────────
 
@@ -137,29 +140,73 @@ async function attemptDelivery(
   const startTime = Date.now()
 
   try {
+    // SSRF guard at DELIVERY time (audit H3): the registration-time check is
+    // not enough — DNS records can change between registration and delivery
+    // (a public domain can start resolving to 169.254.169.254). A blocked
+    // URL is a policy violation, not a transient failure: mark the delivery
+    // permanently failed instead of scheduling retries.
+    const startVerdict = await assertSafeWebhookUrl(webhook.url)
+    if (!startVerdict.ok) {
+      log.error(
+        { webhookId: webhook.id, deliveryId: delivery.id, reason: startVerdict.reason },
+        "Webhook URL blocked by SSRF guard"
+      )
+      await updateDelivery(delivery.id, {
+        status: "failed",
+        statusCode: 0,
+        responseBody: `Blocked by SSRF guard: ${startVerdict.reason}`.slice(0, 1000),
+        attempts: delivery.attempts + 1,
+        nextRetryAt: null,
+      })
+      return
+    }
+
     // Compute HMAC-SHA256 signature.
     const body = JSON.stringify(event)
     const signature = computeSignature(webhook.secret, body)
 
-    // Prepare the HTTP request.
+    const headers = {
+      "Content-Type": "application/json",
+      "X-Webhook-Id": webhook.id,
+      "X-Webhook-Event": event.type,
+      "X-Webhook-Signature": `${WEBHOOK_SIGNATURE_PREFIX}${signature}`,
+      "X-Webhook-Timestamp": event.timestamp,
+      "User-Agent": "EliteDev-Webhook/1.0",
+    }
+
+    // Never follow redirects blindly: `redirect: "manual"` + re-validate
+    // every followed Location hop through the SSRF guard (a public URL can
+    // 302 into the cloud metadata endpoint). Only method-preserving 307/308
+    // hops are followed — the signed POST body must never be replayed as a
+    // GET (301/302/303 semantics); those come back as the final response and
+    // are handled as a normal non-2xx failure below. The timeout budget
+    // covers all hops.
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), WEBHOOK_TIMEOUT_MS)
 
-    const response = await fetch(webhook.url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Webhook-Id": webhook.id,
-        "X-Webhook-Event": event.type,
-        "X-Webhook-Signature": `${WEBHOOK_SIGNATURE_PREFIX}${signature}`,
-        "X-Webhook-Timestamp": event.timestamp,
-        "User-Agent": "EliteDev-Webhook/1.0",
-      },
-      body,
-      signal: controller.signal,
-    })
+    let post: GuardedPostResult
+    try {
+      post = await postFollowingRedirects(startVerdict.url, headers, body, controller.signal)
+    } finally {
+      clearTimeout(timeout)
+    }
 
-    clearTimeout(timeout)
+    if (post.kind === "blocked") {
+      log.error(
+        { webhookId: webhook.id, deliveryId: delivery.id, reason: post.reason },
+        "Webhook redirect blocked by SSRF guard"
+      )
+      await updateDelivery(delivery.id, {
+        status: "failed",
+        statusCode: 0,
+        responseBody: `Blocked by SSRF guard: ${post.reason}`.slice(0, 1000),
+        attempts: delivery.attempts + 1,
+        nextRetryAt: null,
+      })
+      return
+    }
+
+    const response = post.response
 
     const responseBody = await response.text().catch(() => "")
     const durationMs = Date.now() - startTime
@@ -216,6 +263,58 @@ async function attemptDelivery(
 
     await scheduleRetry(delivery, webhook, event, 0, isTimeout ? "timeout" : String(err))
   }
+}
+
+type GuardedPostResult =
+  | { kind: "response"; response: Response }
+  | { kind: "blocked"; reason: string }
+
+/** 3xx statuses that preserve method+body (the only hops we follow). */
+const METHOD_PRESERVING_REDIRECTS = new Set([307, 308])
+
+/**
+ * POST with redirects handled MANUALLY: only method-preserving 307/308 hops
+ * are followed, and every Location target is resolved and re-validated
+ * through the SSRF guard before the next request is sent. Any other status
+ * (including 301/302/303) is returned as the final response so the caller
+ * treats it as a normal delivery outcome — the signed POST is never replayed
+ * as a GET, and never lands on an unvalidated host.
+ */
+export async function postFollowingRedirects(
+  startUrl: string,
+  headers: Record<string, string>,
+  body: string,
+  signal: AbortSignal
+): Promise<GuardedPostResult> {
+  let currentUrl = startUrl
+
+  for (let hop = 0; hop <= MAX_REDIRECT_HOPS; hop++) {
+    const response = await fetch(currentUrl, {
+      method: "POST",
+      headers,
+      body,
+      signal,
+      redirect: "manual",
+    })
+
+    if (!METHOD_PRESERVING_REDIRECTS.has(response.status) || hop === MAX_REDIRECT_HOPS) {
+      return { kind: "response", response }
+    }
+
+    const location = response.headers.get("location")
+    if (!location) return { kind: "response", response }
+
+    const nextUrl = new URL(location, currentUrl).toString()
+    const verdict = await assertSafeWebhookUrl(nextUrl)
+    if (!verdict.ok) {
+      return { kind: "blocked", reason: `redirect to ${nextUrl}: ${verdict.reason}` }
+    }
+
+    currentUrl = verdict.url
+  }
+
+  // Unreachable (loop returns on the last hop).
+  return { kind: "blocked", reason: "too many redirects" }
 }
 
 /**
