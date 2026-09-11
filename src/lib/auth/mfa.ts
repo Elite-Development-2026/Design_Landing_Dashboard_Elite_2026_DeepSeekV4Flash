@@ -14,6 +14,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { getCurrentUser } from "@/lib/auth/authorization"
 import { writeAuditLog } from "@/lib/auth/sessions"
+import { rateLimit2FA } from "@/lib/auth/rate-limit"
 import { moduleLogger } from "@/lib/logger"
 
 const log = moduleLogger("mfa")
@@ -31,25 +32,12 @@ type MfaActionResult = {
   enabled?: boolean
 }
 
-// Best-effort per-instance verify throttling. On serverless each instance has
-// its own Map, so this is a backstop — TODO: replace with the shared
-// Upstash-backed limiter from src/lib/rate-limit.ts.
-const VERIFY_LIMIT = 5
-const VERIFY_WINDOW_MS = 5 * 60 * 1000
-const verifyAttempts = new Map<string, { count: number; resetAt: number }>()
-
-function verifyRateOk(userId: string): boolean {
-  const now = Date.now()
-  const entry = verifyAttempts.get(userId)
-  if (!entry || entry.resetAt <= now) {
-    if (verifyAttempts.size > 10_000) verifyAttempts.clear()
-    verifyAttempts.set(userId, { count: 1, resetAt: now + VERIFY_WINDOW_MS })
-    return true
-  }
-  if (entry.count >= VERIFY_LIMIT) return false
-  entry.count += 1
-  return true
-}
+// 2FA verify is rate-limited through the SHARED backend (Upstash → Postgres
+// RPC, migration 062) — the previous per-instance Map was useless on
+// serverless (reset on cold start, per-Lambda). Keyed per user id so one
+// office NAT cannot lock everyone out. Fail-closed: if the limiter backend
+// errors, RateLimitUnavailableError propagates to the catch below and
+// verification is refused — never proceed uncounted (audit H2).
 
 /**
  * Check if the current user's role requires MFA.
@@ -111,9 +99,10 @@ export async function verifyMfaCode(
     const user = await getCurrentUser()
     if (!user) return { success: false, error: "Not authenticated." }
 
-    if (!verifyRateOk(user.id)) {
+    const rl = await rateLimit2FA(user.id)
+    if (!rl.success) {
       log.warn({ userId: user.id, factorId }, "MFA verify rate limit exceeded")
-      return { success: false, error: "Too many attempts. Try again in 5 minutes." }
+      return { success: false, error: "Too many attempts. Try again in a few minutes." }
     }
 
     const supabase = await createClient()
