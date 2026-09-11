@@ -16,6 +16,7 @@ import { getCurrentUser, requirePermission } from "@/lib/auth/authorization"
 import { writeAuditLog } from "@/lib/auth/sessions"
 import { toCsv } from "@/lib/accounting/csv-utils"
 import { rateLimitOrders } from "@/lib/auth/rate-limit"
+import { monthBounds } from "@/lib/orders/month-boundaries"
 import { orderEntryCreateSchema, type OrderEntryCreateInput } from "@/types/orders"
 
 export type ActionResult = { success: boolean; error?: string; id?: string }
@@ -167,8 +168,7 @@ export async function exportOrdersCsv(month: string): Promise<ExportResult> {
     const mon = Number(monthStr)
     if (!year || !mon || mon < 1 || mon > 12) return { success: false, error: "Invalid month." }
 
-    const start = `${year}-${String(mon).padStart(2, "0")}-01`
-    const end = `${year}-${String(mon).padStart(2, "0")}-31`
+    const { start, end } = monthBounds(year, mon)
 
     const admin = createAdminClient()
     const { data, error } = await admin
