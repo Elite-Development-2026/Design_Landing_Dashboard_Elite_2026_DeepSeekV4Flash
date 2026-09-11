@@ -88,6 +88,8 @@ export type TranslationStrings = {
     backToSignIn: string
     invalidCredentials: string
     emailNotConfirmed: string
+    tooManyAttempts: string
+    serviceUnavailable: string
     accountLocked: string
     accountInactive: string
     profileNotFound: string

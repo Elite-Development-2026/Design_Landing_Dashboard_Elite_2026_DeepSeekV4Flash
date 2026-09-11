@@ -26,6 +26,7 @@ export type ErrorCode =
   | "AUTH006"
   | "AUTH007"
   | "AUTH_RATE_LIMITED"
+  | "RATE_LIMIT_UNAVAILABLE"
   | "AUTH_ACCOUNT_INACTIVE"
   | "AUTH_ACCOUNT_LOCKED"
   | "AUTH_INVITE_CREATE_FAILED"
@@ -147,6 +148,7 @@ export type ErrorCode =
   | "ZAT001"
   | "ZAT002"
   // Catch-all
+  | "ERR_VALIDATION"
   | "ERR_INTERNAL"
 
 export type ErrorDefinition = {
@@ -205,6 +207,15 @@ export const ERROR_CODES: Record<ErrorCode, ErrorDefinition> = {
     httpStatus: 429,
     messageAr: "محاولات كثيرة. حاول مرة أخرى لاحقاً.",
     messageEn: "Too many attempts. Try again later.",
+  },
+  // The rate-limit backend itself failed (missing migration / Redis or
+  // Postgres outage). Auth endpoints fail CLOSED on this — see
+  // src/lib/auth/rate-limit.ts.
+  RATE_LIMIT_UNAVAILABLE: {
+    code: "RATE_LIMIT_UNAVAILABLE",
+    httpStatus: 503,
+    messageAr: "الخدمة غير متاحة مؤقتاً. حاول مرة أخرى بعد قليل.",
+    messageEn: "Service temporarily unavailable. Please try again shortly.",
   },
   AUTH_ACCOUNT_INACTIVE: {
     code: "AUTH_ACCOUNT_INACTIVE",
@@ -846,6 +857,12 @@ export const ERROR_CODES: Record<ErrorCode, ErrorDefinition> = {
   },
 
   // ── Catch-all ─────────────────────────────────────────────────────────
+  ERR_VALIDATION: {
+    code: "ERR_VALIDATION",
+    httpStatus: 400,
+    messageAr: "بيانات الطلب غير صالحة.",
+    messageEn: "Invalid request data.",
+  },
   ERR_INTERNAL: {
     code: "ERR_INTERNAL",
     httpStatus: 500,

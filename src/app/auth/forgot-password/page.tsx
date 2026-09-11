@@ -5,8 +5,7 @@ import Link from "next/link"
 import { Mail, MailCheck, Loader2, AlertCircle } from "lucide-react"
 import { LogoMark } from "@/components/logo"
 import { useTranslation } from "@/hooks/use-translation"
-import { createClient } from "@/lib/supabase/client"
-import { REDIRECTS, authCallbackUrlWithReturn } from "@/lib/redirects"
+import { REDIRECTS } from "@/lib/redirects"
 
 export default function ForgotPasswordPage() {
   const { t } = useTranslation()
@@ -20,24 +19,35 @@ export default function ForgotPasswordPage() {
     setError(null)
     setLoading(true)
     try {
-      const supabase = createClient()
-      // Send the recovery email; the link always completes on the DASHBOARD
-      // deployment (where the fresh session cookie is written) via
-      // /auth/confirm?type=recovery → /auth/reset-password. In single-host
-      // mode this is simply this origin. (Supabase only accepts redirectTo
-      // values registered in its Redirect URLs allow-list.)
-      const redirectTo = authCallbackUrlWithReturn()
-      const { error: authError } = await supabase.auth.resetPasswordForEmail(
-        email.trim(),
-        { redirectTo }
-      )
-      if (authError) {
-        setError(authError.message)
+      // Send through the server route: it applies the shared per-IP rate
+      // limit (3/hour, fail-closed) server-side — a direct browser
+      // resetPasswordForEmail call bypasses the limiter entirely (audit H2).
+      // The link always completes on the DASHBOARD deployment (where the
+      // fresh session cookie is written) via /auth/confirm?type=recovery →
+      // /auth/reset-password. (Supabase only accepts redirectTo values
+      // registered in its Redirect URLs allow-list.)
+      const res = await fetch("/api/auth/forgot-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: email.trim() }),
+      })
+
+      if (!res.ok) {
+        const payload = (await res.json().catch(() => null)) as {
+          code?: string
+        } | null
+        setError(
+          payload?.code === "AUTH_RATE_LIMITED"
+            ? t.auth.tooManyAttempts
+            : payload?.code === "RATE_LIMIT_UNAVAILABLE"
+              ? t.auth.serviceUnavailable
+              : t.auth.genericError
+        )
         return
       }
       setSent(true)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : t.auth.genericError)
+    } catch {
+      setError(t.auth.genericError)
     } finally {
       setLoading(false)
     }

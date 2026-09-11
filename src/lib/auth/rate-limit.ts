@@ -1,22 +1,37 @@
-// Application-layer rate limiting for Phase 2.
+// Application-layer rate limiting for Phase 2 (audit fix H2).
 //
 // Enforces the v2.0 rate limits (auth plan section 5):
 //   sign-in            10 / minute  per IP
 //   forgot-password     3 / hour    per IP
-//   2FA verify          5 / minute  per IP
+//   2FA verify          5 / minute  per user
 //   reports generate   10 / hour    per user
 //   orders import      30 / hour    per user
+//   + the domain-specific wrappers below
 //
 // Rate limiting is enforced at the Server Action / Route Handler entry point,
 // NOT in middleware (auth plan 5.7).
 //
-// REQUIRES: pnpm add @upstash/redis @upstash/ratelimit
-//   These are OPTIONAL — when UPSTASH_REDIS_REST_URL /
-//   UPSTASH_REDIS_REST_TOKEN are absent, an in-memory Map limiter is used
-//   (development only; not safe for multi-instance production).
+// BACKEND LADDER (shared across all serverless instances — no in-memory Maps;
+// per-instance state is useless on serverless and resets on cold start):
+//   1. UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN set → Upstash Redis
+//      fixed-window counter (INCR + PEXPIRE).
+//   2. Otherwise → Postgres: the ATOMIC `check_rate_limit` RPC
+//      (supabase/migrations/062_auth_rate_limits.sql) via the service-role
+//      client. Check-and-increment is a single upsert statement — no
+//      SELECT-then-INSERT race under concurrent bursts.
 //
-// Reference: docs/phase-2-auth-plan.md section 5 (Rate limiting strategy).
+// FAIL-CLOSED CONTRACT (audit H2): if the limiter backend itself errors
+// (missing 062 migration, Redis/Postgres outage), `rateLimit()` throws
+// `RateLimitUnavailableError` → auth routes return 503. An endpoint that
+// cannot be counted MUST NOT process the request.
+//
+// ⚠️  DEPLOYMENT ORDER: apply migration 062 to Supabase BEFORE this code
+//     ships (Vercel previews share the project). Code-without-migration =
+//     503 on every rate-limited endpoint — by design, not a bug.
+//
+// Reference: docs/phase-2-auth-plan.md section 5, docs/codebase-audit-2026-09-10.md (H2).
 
+import { Redis } from "@upstash/redis"
 import { ERROR_CODES } from "@/lib/errors/error-codes"
 import { logger } from "@/lib/logger"
 
@@ -55,104 +70,166 @@ export class RateLimitError extends Error {
   }
 }
 
-// ── Upstash (optional) ─────────────────────────────────────────────────────
-
-// Minimal local type for the @upstash/ratelimit instance. Avoids a hard
-// top-level import (the package may not be installed in dev).
-type UpstashLimiter = {
-  limit: (
-    identifier: string
-  ) => Promise<{ success: boolean; remaining: number; reset: number }>
-}
-
-type UpstashRatelimitModule = {
-  Ratelimit: new (config: {
-    redis: unknown
-    limiter: unknown
-    prefix: string
-    analytics: boolean
-  }) => UpstashLimiter
-  slidingWindow: (
-    limit: number,
-    window: string
-  ) => { limit: number; window: string }
-}
-
-type UpstashRedisModule = {
-  Redis: new (config: { url: string; token: string }) => unknown
-}
-
-const upstashLimiters = new Map<string, UpstashLimiter>()
-let upstashAvailable: boolean | null = null
-
 /**
- * Dynamic import with a non-literal specifier so TypeScript does not try to
- * resolve the (optional) module at compile time. The package must be installed
- * at runtime for the Upstash path to work.
+ * 503 — the rate-limit backend itself failed (062 migration missing, Redis /
+ * Postgres outage). Auth endpoints fail CLOSED: surface the bilingual
+ * RATE_LIMIT_UNAVAILABLE envelope with HTTP 503, never proceed uncounted.
  */
-async function importOptional(name: string): Promise<Record<string, unknown>> {
-  const specifier = name as string
-  return (await import(specifier)) as Record<string, unknown>
+export class RateLimitUnavailableError extends Error {
+  readonly code: string
+  readonly statusCode: number
+  readonly messageAr: string
+  readonly messageEn: string
+
+  constructor() {
+    const def = ERROR_CODES.RATE_LIMIT_UNAVAILABLE
+    super(def.messageEn)
+    this.name = "RateLimitUnavailableError"
+    this.code = def.code
+    this.statusCode = def.httpStatus
+    this.messageAr = def.messageAr
+    this.messageEn = def.messageEn
+  }
 }
 
-async function getUpstashLimiter(
-  limit: number,
-  windowDuration: string
-): Promise<UpstashLimiter | null> {
-  if (upstashAvailable === false) return null
+// ── Upstash backend (layer 1, optional) ────────────────────────────────────
 
-  const cacheKey = `${limit}:${windowDuration}`
-  const cached = upstashLimiters.get(cacheKey)
-  if (cached) return cached
-
+const upstash = (() => {
   const url = process.env.UPSTASH_REDIS_REST_URL
   const token = process.env.UPSTASH_REDIS_REST_TOKEN
-  if (!url || !token) {
-    upstashAvailable = false
-    return null
-  }
+  if (!url || !token) return null
+  return new Redis({ url, token })
+})()
 
+let upstashFailureLogged = false
+
+async function rateLimitUpstash(
+  key: string,
+  limit: number,
+  windowSeconds: number
+): Promise<RateLimitResult> {
+  const redisKey = `elitedev:rl:${key}`
   try {
-    const ratelimitMod = (await importOptional("@upstash/ratelimit")) as unknown as UpstashRatelimitModule
-    const redisMod = (await importOptional("@upstash/redis")) as unknown as UpstashRedisModule
+    // Fixed window: INCR + PTTL in one round trip; set TTL on the first hit.
+    const pipeline = upstash!.pipeline()
+    pipeline.incr(redisKey)
+    pipeline.pttl(redisKey)
+    const [count, pttl] = await pipeline.exec<[number, number]>()
 
-    const limiter = new ratelimitMod.Ratelimit({
-      redis: new redisMod.Redis({ url, token }),
-      limiter: ratelimitMod.slidingWindow(limit, windowDuration),
-      prefix: "elitedev",
-      analytics: true,
-    })
-    upstashLimiters.set(cacheKey, limiter)
-    upstashAvailable = true
-    return limiter
+    const firstHit = count === 1 || pttl < 0
+    if (firstHit) await upstash!.pexpire(redisKey, windowSeconds * 1000)
+
+    return {
+      success: count <= limit,
+      remaining: Math.max(limit - count, 0),
+      resetAt: firstHit
+        ? Date.now() + windowSeconds * 1000
+        : Date.now() + Math.max(pttl, 0),
+    }
   } catch (err) {
-    upstashAvailable = false
-    warnInMemoryFallbackOnce(err)
-    return null
+    if (!upstashFailureLogged) {
+      upstashFailureLogged = true
+      logger.warn(
+        { err, component: "rate-limit" },
+        "Upstash rate-limit backend failed — failing closed"
+      )
+    }
+    throw new RateLimitUnavailableError()
   }
 }
 
-// ── In-memory fallback (dev only) ───────────────────────────────────────────
+// ── Postgres backend (layer 2, default) ────────────────────────────────────
 
-type MemoryEntry = { count: number; resetAt: number }
-const memoryBuckets = new Map<string, MemoryEntry>()
-let memoryFallbackWarned = false
-
-function warnInMemoryFallbackOnce(err: unknown): void {
-  if (memoryFallbackWarned) return
-  memoryFallbackWarned = true
-  logger.warn(
-    { err, component: "rate-limit" },
-    "Upstash Redis not configured — using in-memory rate limiting (dev only)"
-  )
+type CheckRateLimitRow = {
+  allowed: boolean
+  remaining: number
+  reset_at: string
 }
 
-function windowToMs(window: RateLimitWindow): number {
+type AdminClient = { rpc: (...args: unknown[]) => Promise<unknown> }
+
+let pgClient: AdminClient | null = null
+
+async function getPostgresClient(): Promise<AdminClient> {
+  if (pgClient) return pgClient
+  try {
+    // Service-role client (server-only): the RPC is granted to service_role.
+    const { createAdminClient } = await import("@/lib/supabase/admin")
+    pgClient = createAdminClient() as unknown as AdminClient
+    return pgClient
+  } catch (err) {
+    logger.error(
+      { err, component: "rate-limit" },
+      "Cannot create Postgres rate-limit client (missing SUPABASE_SERVICE_ROLE_KEY?)"
+    )
+    throw new RateLimitUnavailableError()
+  }
+}
+
+async function rateLimitPostgres(
+  key: string,
+  limit: number,
+  windowSeconds: number
+): Promise<RateLimitResult> {
+  const admin = await getPostgresClient()
+  let raw: unknown
+  try {
+    // A REJECTED rpc call (network outage, pool exhaustion) must fail closed
+    // exactly like an error response — never let the raw error escape and
+    // never fail open.
+    raw = await admin.rpc("check_rate_limit", {
+      p_key: key,
+      p_limit: limit,
+      p_window_seconds: windowSeconds,
+    })
+  } catch (err) {
+    logger.error(
+      { err, component: "rate-limit" },
+      "Postgres rate-limit backend rejected the call — failing closed"
+    )
+    throw new RateLimitUnavailableError()
+  }
+  const { data, error } = raw as {
+    data: CheckRateLimitRow[] | CheckRateLimitRow | null
+    error: { message: string } | null
+  }
+
+  if (error) {
+    // Most common cause: migration 062 not applied to this Supabase project.
+    logger.error(
+      { err: error, component: "rate-limit" },
+      "Postgres rate-limit backend failed — failing closed (is migration 062 applied?)"
+    )
+    throw new RateLimitUnavailableError()
+  }
+
+  const row = Array.isArray(data) ? data[0] : data
+  if (!row) {
+    logger.error(
+      { component: "rate-limit" },
+      "check_rate_limit returned no row — failing closed"
+    )
+    throw new RateLimitUnavailableError()
+  }
+
+  const resetAt = new Date(row.reset_at).getTime()
+  return {
+    success: Boolean(row.allowed),
+    remaining: Number(row.remaining) || 0,
+    resetAt: Number.isFinite(resetAt)
+      ? resetAt
+      : Date.now() + windowSeconds * 1000,
+  }
+}
+
+// ── Public API ─────────────────────────────────────────────────────────────
+
+function windowToSeconds(window: RateLimitWindow): number {
   switch (window) {
     case "minute":
-      return 60 * 1000
+      return 60
     case "hour":
-      return 60 * 60 * 1000
+      return 3600
     default: {
       const _exhaustive: never = window
       return _exhaustive
@@ -160,77 +237,47 @@ function windowToMs(window: RateLimitWindow): number {
   }
 }
 
-function rateLimitInMemory(
-  key: string,
-  limit: number,
-  windowMs: number
-): RateLimitResult {
-  if (!memoryFallbackWarned) {
-    warnInMemoryFallbackOnce(undefined)
-  }
-
-  const now = Date.now()
-  const entry = memoryBuckets.get(key)
-  if (!entry || entry.resetAt <= now) {
-    const resetAt = now + windowMs
-    memoryBuckets.set(key, { count: 1, resetAt })
-    return { success: true, remaining: limit - 1, resetAt }
-  }
-  entry.count += 1
-  if (entry.count > limit) {
-    return { success: false, remaining: 0, resetAt: entry.resetAt }
-  }
-  return { success: true, remaining: limit - entry.count, resetAt: entry.resetAt }
-}
-
-// ── Public API ─────────────────────────────────────────────────────────────
-
 /**
- * Check the rate limit for an identifier.
+ * Check the rate limit for an identifier against the shared backend.
  *
  * @param identifier  IP address (per-IP limits) or user id (per-user limits).
  * @param limit       max requests allowed in the window.
  * @param window      `"minute"` or `"hour"`.
  * @returns `{ success, remaining, resetAt }`. Callers should throw
- *          `RateLimitError` (or `AppError("AUTH_RATE_LIMITED")`) when
- *          `success` is false.
+ *          `RateLimitError` (or return the AUTH_RATE_LIMITED envelope) when
+ *          `success` is false. Throws `RateLimitUnavailableError` (→ 503)
+ *          when the backend itself fails — NEVER fall back to an uncounted
+ *          request.
  */
 export async function rateLimit(
   identifier: string,
   limit: number,
   window: RateLimitWindow
 ): Promise<RateLimitResult> {
-  const windowDuration = window === "minute" ? "1 m" : "1 h"
-  const key = `${windowDuration}:${identifier}`
+  // Cap the key length; identifiers are IPs or user ids, but never trust
+  // unbounded caller input near a primary-key column.
+  const key = `${window}:${identifier.slice(0, 200)}`
+  const windowSeconds = windowToSeconds(window)
 
-  const limiter = await getUpstashLimiter(limit, windowDuration)
-  if (limiter) {
-    const result = await limiter.limit(key)
-    return {
-      success: result.success,
-      remaining: result.remaining,
-      resetAt: result.reset,
-    }
-  }
-
-  return rateLimitInMemory(key, limit, windowToMs(window))
+  if (upstash) return rateLimitUpstash(key, limit, windowSeconds)
+  return rateLimitPostgres(key, limit, windowSeconds)
 }
 
 // ── Convenience wrappers (v2.0 limits) ─────────────────────────────────────
 
-/** Sign-in Server Action: 10 / minute, per IP. */
+/** Sign-in endpoint: 10 / minute, per IP. */
 export function rateLimitSignIn(ip: string): Promise<RateLimitResult> {
   return rateLimit(`signin:${ip}`, 10, "minute")
 }
 
-/** Forgot-password Server Action: 3 / hour, per IP. */
+/** Forgot-password endpoint: 3 / hour, per IP. */
 export function rateLimitForgotPassword(ip: string): Promise<RateLimitResult> {
   return rateLimit(`forgot:${ip}`, 3, "hour")
 }
 
-/** 2FA verify Server Action: 5 / minute, per IP. */
-export function rateLimit2FA(ip: string): Promise<RateLimitResult> {
-  return rateLimit(`2fa:${ip}`, 5, "minute")
+/** 2FA verify action: 5 / minute, per user id. */
+export function rateLimit2FA(userId: string): Promise<RateLimitResult> {
+  return rateLimit(`2fa:${userId}`, 5, "minute")
 }
 
 /** Reports generate (Server Action / Route Handler): 10 / hour, per user. */
@@ -312,4 +359,3 @@ export function rateLimitSettings(userId: string): Promise<RateLimitResult> {
 export function rateLimitVehicles(userId: string): Promise<RateLimitResult> {
   return rateLimit(`vehicles:${userId}`, 20, "minute")
 }
-

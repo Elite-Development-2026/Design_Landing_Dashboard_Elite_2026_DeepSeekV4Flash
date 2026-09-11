@@ -8,7 +8,7 @@ import { zodResolver } from "@hookform/resolvers/zod"
 import { useForm } from "react-hook-form"
 import { z } from "zod"
 import { createClient } from "@/lib/supabase/client"
-import { REDIRECTS, DASHBOARD_PATH, safeReturnPath } from "@/lib/redirects"
+import { DASHBOARD_PATH, safeReturnPath } from "@/lib/redirects"
 import { Eye, EyeOff, Lock, Mail, Loader2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -95,23 +95,31 @@ export function LoginForm1({
     setErrorMessage(null)
     setIsLoading(true)
     try {
-      const supabase = createClient()
-      const { error } = await supabase.auth.signInWithPassword({
-        email: values.email.trim(),
-        password: values.password,
+      // Sign in through the server route: it applies the shared per-IP rate
+      // limit (fail-closed), establishes the SSR session server-side, and
+      // writes the sb-* auth cookies onto its response — a direct browser
+      // signInWithPassword call would bypass the limiter entirely (audit H2).
+      const res = await fetch("/api/auth/sign-in", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: values.email.trim(), password: values.password }),
       })
 
-      if (error) {
-        // Map known Supabase auth error codes to friendly bilingual messages.
+      if (!res.ok) {
+        const payload = (await res.json().catch(() => null)) as {
+          code?: string
+        } | null
         setErrorMessage(
-          error.code === "email_not_confirmed"
-            ? t.auth.emailNotConfirmed
-            : t.auth.invalidCredentials
+          payload?.code === "AUTH_RATE_LIMITED"
+            ? t.auth.tooManyAttempts
+            : payload?.code === "RATE_LIMIT_UNAVAILABLE"
+              ? t.auth.serviceUnavailable
+              : t.auth.invalidCredentials
         )
         return
       }
 
-      // Signed in — the SSR client has persisted the session cookie.
+      // Signed in — the route response carried the fresh session cookies.
       // Honor the ?returnTo= param (open-redirect guarded); the default is
       // the centralized dashboard destination (absolute when this code runs
       // under the two-deployment production topology).

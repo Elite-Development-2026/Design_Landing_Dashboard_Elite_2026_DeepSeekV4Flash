@@ -17,7 +17,6 @@ import { moduleLogger } from "@/lib/logger"
 import {
   type CreateWebhookInput,
   type UpdateWebhookInput,
-  type WebhookEventType,
 } from "./types"
 import {
   listWebhooks,
@@ -29,6 +28,7 @@ import {
   getDeliveryStats,
 } from "./store"
 import { processRetries } from "./dispatcher"
+import { assertSafeWebhookUrl } from "./url-guard"
 
 const log = moduleLogger("webhooks/actions")
 
@@ -96,11 +96,12 @@ export async function createWebhookRegistration(input: CreateWebhookInput): Prom
     const rl = await rateLimitSettings(currentUser.id)
     if (!rl.success) throw new RateLimitError(rl.resetAt, 10)
 
-    // Validate URL.
-    try {
-      new URL(input.url)
-    } catch {
-      return { success: false, error: "Invalid webhook URL." }
+    // SSRF guard (audit H3): https-only, no metadata hostnames, and the
+    // hostname must not resolve to any private/loopback/link-local address.
+    // Delivery re-checks this and validates every redirect hop.
+    const urlVerdict = await assertSafeWebhookUrl(input.url)
+    if (!urlVerdict.ok) {
+      return { success: false, error: `Invalid webhook URL: ${urlVerdict.reason}.` }
     }
 
     // Validate event types.
@@ -155,12 +156,11 @@ export async function updateWebhookRegistration(
     const rl = await rateLimitSettings(currentUser.id)
     if (!rl.success) throw new RateLimitError(rl.resetAt, 10)
 
-    // Validate URL if provided.
+    // SSRF guard (audit H3) — same checks as registration.
     if (input.url) {
-      try {
-        new URL(input.url)
-      } catch {
-        return { success: false, error: "Invalid webhook URL." }
+      const urlVerdict = await assertSafeWebhookUrl(input.url)
+      if (!urlVerdict.ok) {
+        return { success: false, error: `Invalid webhook URL: ${urlVerdict.reason}.` }
       }
     }
 
