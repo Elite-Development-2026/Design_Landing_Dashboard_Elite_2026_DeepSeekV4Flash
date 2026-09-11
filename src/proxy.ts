@@ -2,22 +2,11 @@
 import { NextResponse, type NextRequest } from "next/server"
 import { createServerClient } from "@supabase/ssr"
 import crypto from "crypto"
-import { landingUrlWithReturn, REDIRECTS, toAbsoluteUrl, IS_MULTI_DEPLOYMENT } from "@/lib/redirects"
 
 // Next 16: this file is `proxy.ts` (renamed from middleware.ts).
 // Exported function is `proxy`. See the `matcher` export at the bottom.
 // M8 / ADR-019: narrowed matcher — ONLY dashboard/module routes.
-// Excludes: /auth, /api, /_next, /favicon.ico, /login, /register, /landing, /.  
-//
-// Cross-deployment routing (see src/lib/redirects.ts):
-//   • This deployment only ever owns session cookies when DEPLOYMENT_ROLE=dashboard.
-//     On the landing deployment the proxy's matcher still never matches
-//     (Vercel runs proxy.ts per-project) — but every redirect it produces is
-//     ABSOLUTE to the correct deployment, never a bare relative path that
-//     could resolve to the wrong host.
-//   • Unauthenticated visitor of a protected route → LANDING deployment's
-//     /landing (with ?returnTo for post-login return).
-//   • Authenticated visitor of this deployment's /landing → /dashboard.
+// Excludes: /auth, /api, /_next, /favicon.ico, /login, /register, /landing, /.
 
 type UserProfile = {
   id: string
@@ -39,19 +28,6 @@ const SETTINGS_ROLE_GUARDS: Record<string, string[]> = {
 }
 
 export async function proxy(request: NextRequest) {
-  // "/landing" is ONLY intercepted on the dashboard deployment (requirement E:
-  // authenticated visitors of /landing → /dashboard; logged-out visitors →
-  // the canonical public landing URL). On the landing deployment /landing IS
-  // the public page and must never be intercepted. The matcher below always
-  // includes "/landing" because Next 16 requires a fully static matcher —
-  // so the deployment-role decision happens here at request time instead.
-  if (
-    request.nextUrl.pathname === "/landing" &&
-    !(IS_MULTI_DEPLOYMENT && process.env.DEPLOYMENT_ROLE === "dashboard")
-  ) {
-    return NextResponse.next()
-  }
-
   const requestId = crypto.randomUUID()
   const response = NextResponse.next({ request })
   response.headers.set("X-Request-ID", requestId)
@@ -81,15 +57,9 @@ export async function proxy(request: NextRequest) {
   } = await supabase.auth.getUser()
 
   if (!user) {
-    // Requirement 10: unauthenticated users must be sent to the public landing
-    // page — ABSOLUTE in multi-deployment mode so it can never resolve to a
-    // /dashboard on this host, with returnTo preserved for the post-login hop.
-    return NextResponse.redirect(
-      toAbsoluteUrl(
-        landingUrlWithReturn(request.nextUrl.pathname + request.nextUrl.search),
-        request.nextUrl.origin
-      )
-    )
+    const signInUrl = new URL("/auth/sign-in", request.url)
+    signInUrl.searchParams.set("returnTo", request.nextUrl.pathname)
+    return NextResponse.redirect(signInUrl)
   }
 
   // 3. Fetch the custom users row (tenant, role, status, lockout, password).
@@ -99,39 +69,22 @@ export async function proxy(request: NextRequest) {
     .eq("auth_user_id", user.id)
     .single<UserProfile>()
 
-  // Path of the current request — shared by all gates below (declared once).
-  const pathname = request.nextUrl.pathname
-
-  // 3.5. Marketing-page guard (dashboard deployment only — the matcher above
-  // includes /landing solely when DEPLOYMENT_ROLE=dashboard):
-  //   • authenticated visitor → the dashboard (requirement E)
-  //   • unauthenticated visitor → the canonical public landing URL, so the
-  //     dashboard deployment never serves as the marketing host.
-  if (pathname === "/landing") {
-    return NextResponse.redirect(
-      user
-        ? toAbsoluteUrl(REDIRECTS.dashboardUrl, request.nextUrl.origin)
-        : toAbsoluteUrl(REDIRECTS.landingUrl, request.nextUrl.origin)
-    )
-  }
-
   if (!profile) {
     // Auth user exists but the custom users row does not — the sync trigger
     // (schema plan) should have created it. Treat as unauthenticated and
     // force sign-out to avoid a half-state.
     await supabase.auth.signOut()
-    const signInError = new URL(toAbsoluteUrl(REDIRECTS.signInUrl, request.nextUrl.origin))
-    signInError.searchParams.set("error", "AUTH_PROFILE_NOT_FOUND")
-    return NextResponse.redirect(signInError)
+    const url = new URL("/auth/sign-in", request.url)
+    url.searchParams.set("error", "AUTH_PROFILE_NOT_FOUND")
+    return NextResponse.redirect(url)
   }
 
-  // 4. Account status checks. (These users ARE authenticated — send them to
-  // the dashboard deployment's sign-in where the error banners render.)
+  // 4. Account status checks.
   if (profile.status === "inactive") {
     await supabase.auth.signOut()
-    const inactiveUrl = new URL(toAbsoluteUrl(REDIRECTS.signInUrl, request.nextUrl.origin))
-    inactiveUrl.searchParams.set("error", "AUTH_ACCOUNT_INACTIVE")
-    return NextResponse.redirect(inactiveUrl)
+    const url = new URL("/auth/sign-in", request.url)
+    url.searchParams.set("error", "AUTH_ACCOUNT_INACTIVE")
+    return NextResponse.redirect(url)
   }
 
   if (
@@ -139,10 +92,13 @@ export async function proxy(request: NextRequest) {
     profile.locked_until &&
     new Date(profile.locked_until).getTime() > Date.now()
   ) {
-    const lockedUrl = new URL(toAbsoluteUrl(REDIRECTS.signInUrl, request.nextUrl.origin))
-    lockedUrl.searchParams.set("error", "AUTH_ACCOUNT_LOCKED")
-    return NextResponse.redirect(lockedUrl)
+    const url = new URL("/auth/sign-in", request.url)
+    url.searchParams.set("error", "AUTH_ACCOUNT_LOCKED")
+    return NextResponse.redirect(url)
   }
+
+  // Path of the current request — shared by the gates below (declared once).
+  const pathname = request.nextUrl.pathname
 
   // 5. Must-change-password gate.
   if (profile.must_change_password) {
@@ -203,23 +159,12 @@ export async function proxy(request: NextRequest) {
     }
   }
 
-  // 7. Attach tenant + role headers for downstream Server Components.
-  //    (Informational only — NOT a security boundary. RLS is the boundary.)
-  response.headers.set("x-tenant-id", profile.tenant_id)
-  response.headers.set("x-user-role", profile.role)
-
   return response
 }
 
 export const config = {
   // M8 / ADR-019: narrowed matcher. Only dashboard/module routes.
-  // Static assets, /auth, /api, /login, /register, and / are excluded.
-  //
-  // "/landing" is ONLY matched on the dashboard deployment (role set via
-  // DEPLOYMENT_ROLE=dashboard) — there it guards requirement E (authenticated
-  // visitors of /landing → /dashboard) and keeps the dashboard host from ever
-  // serving the marketing page to logged-out visitors. On the landing
-  // deployment /landing IS the public page and must never be intercepted.
+  // Static assets, /auth, /api, /landing, /login, /register, and / are excluded.
   matcher: [
     "/dashboard/:path*",
     "/drivers/:path*",
@@ -242,9 +187,5 @@ export const config = {
     "/audit-log/:path*",
     "/security/:path*",
     "/settings/:path*",
-    // "/landing" must stay in the matcher unconditionally: Next 16 requires
-    // the matcher to be statically parseable (no runtime spreads/env checks).
-    // Whether it is actually enforced is decided at the top of proxy().
-    "/landing",
   ],
 }
