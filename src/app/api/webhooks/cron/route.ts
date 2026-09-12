@@ -1,16 +1,15 @@
 // Cron endpoint for processing pending webhook retries.
 //
-// This endpoint should be called periodically (e.g., every 5 minutes)
-// by Vercel Cron, or any scheduled task runner.
-//
-// Vercel Cron configuration (vercel.json):
-//   { "crons": [{ "path": "/api/webhooks/cron", "schedule": "*/5 * * * *" }] }
+// Scheduled in vercel.json ("*/10 * * * *" — clamp-eligible on Hobby) and/or
+// via Supabase pg_cron + pg_net (scripts/pg_cron-webhook-retry.sql), which
+// hits this same route with the CRON_SECRET bearer. See FX-05.
 //
 // Security: Only accepts requests with the CRON_SECRET header.
 // FAILS CLOSED: Returns 503 if CRON_SECRET is not configured.
 
 import { NextResponse } from "next/server"
 import { processRetries } from "@/lib/webhooks/dispatcher"
+import { cleanOldDeliveries } from "@/lib/webhooks/store"
 import { moduleLogger } from "@/lib/logger"
 
 const log = moduleLogger("api/webhooks/cron")
@@ -50,8 +49,14 @@ export async function GET(req: Request): Promise<NextResponse> {
 
   try {
     const result = await processRetries()
-    log.info(result, "Webhook retry processing complete")
-    return NextResponse.json(result)
+
+    // Bounded retention: purge delivery records older than 30 days in the
+    // same cron run (audit FX-05 — webhook_deliveries previously grew
+    // unbounded; cleanOldDeliveries existed but was never called).
+    const deleted = await cleanOldDeliveries(30)
+
+    log.info({ ...result, deletedDeliveries: deleted }, "Webhook cron run complete")
+    return NextResponse.json({ ...result, deletedDeliveries: deleted })
   } catch (err) {
     log.error({ err }, "Webhook retry processing failed")
     return NextResponse.json({ error: "Internal error" }, { status: 500 })
