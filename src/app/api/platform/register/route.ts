@@ -1,9 +1,78 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import { z } from 'zod';
 import { sendCompanyConfirmationEmail } from '@/lib/notifications/company-welcome-email';
+import {
+  rateLimitRegister,
+  RateLimitError,
+  RateLimitUnavailableError,
+} from '@/lib/auth/rate-limit';
+import { ERROR_CODES } from '@/lib/errors/error-codes';
+
+// FX-08: public registration password policy — min 10 chars, at least one
+// letter and one digit (password "a" was previously accepted).
+const registerSchema = z.object({
+  company_name: z.string().min(2).max(200),
+  domain: z.string().min(3).max(253),
+  email: z.string().email().max(320),
+  password: z
+    .string()
+    .min(10)
+    .max(128)
+    .regex(/[A-Za-z]/, 'password must contain a letter')
+    .regex(/[0-9]/, 'password must contain a number'),
+  logo_url: z.string().url().max(512).optional(),
+  brand_colors: z.string().max(32).optional(),
+});
+
+// Best-effort client IP for the per-IP registration rate limit (same
+// extraction as /api/auth/sign-in).
+function ipFromRequest(req: NextRequest): string {
+  const fwd = req.headers.get('x-forwarded-for');
+  if (fwd) return fwd.split(',')[0].trim();
+  return req.headers.get('x-real-ip') ?? 'unknown';
+}
 
 export async function POST(req: NextRequest) {
   try {
+    // ── FX-08 guard #1: per-IP rate limit, FIRST (before any DB/auth work).
+    // Fail closed → 503 when the limiter backend is unavailable.
+    const ip = ipFromRequest(req);
+    let rl;
+    try {
+      rl = await rateLimitRegister(ip);
+    } catch (err) {
+      if (err instanceof RateLimitUnavailableError) {
+        // Fail closed — same bilingual envelope as /api/auth/sign-in.
+        const unavailable = ERROR_CODES.RATE_LIMIT_UNAVAILABLE;
+        return NextResponse.json(
+          {
+            code: unavailable.code,
+            message_ar: unavailable.messageAr,
+            message_en: unavailable.messageEn,
+          },
+          { status: 503 }
+        );
+      }
+      throw err;
+    }
+    if (!rl.success) {
+      const e = new RateLimitError(rl.resetAt, 10);
+      return NextResponse.json(
+        {
+          code: e.code,
+          message_ar: e.messageAr,
+          message_en: e.messageEn,
+        },
+        {
+          status: 429,
+          headers: {
+            'Retry-After': String(Math.max(Math.ceil((rl.resetAt - Date.now()) / 1000), 1)),
+          },
+        }
+      );
+    }
+
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
     const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
     const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
@@ -14,6 +83,22 @@ export async function POST(req: NextRequest) {
 
     if (!company_name || !domain || !email || !password) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
+    }
+
+    // ── FX-08 guard #2: enforce the password policy (min 10 chars + letter +
+    // number) and the full field shape server-side via zod. Weak passwords
+    // previously reached admin.createUser and came back as a fake 200 through
+    // the FX-07 anti-enumeration path.
+    const parsed = registerSchema.safeParse({
+      company_name,
+      domain,
+      email,
+      password,
+      logo_url: logo_url || undefined,
+      brand_colors: brand_colors || undefined,
+    });
+    if (!parsed.success) {
+      return NextResponse.json({ error: 'Invalid registration details' }, { status: 400 });
     }
 
     const slug = company_name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');

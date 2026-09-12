@@ -31,8 +31,17 @@ export default function RegisterPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setState({ kind: 'submitting' });
     setError('');
+
+    // FX-08: mirror the server-side password policy client-side (min 10
+    // chars + at least one letter and one digit).
+    const password = formData.password;
+    if (password.length < 10 || !/[A-Za-z]/.test(password) || !/[0-9]/.test(password)) {
+      setError('كلمة المرور يجب أن تكون 10 أحرف على الأقل وتضم حروفاً وأرقاماً');
+      return;
+    }
+
+    setState({ kind: 'submitting' });
 
     try {
       const res = await fetch('/api/platform/register', {
@@ -160,7 +169,7 @@ export default function RegisterPage() {
             <div><label className="mb-2 block text-sm font-bold">اسم الشركة *</label><input required type="text" value={formData.company_name} onChange={e => setFormData({ ...formData, company_name: e.target.value })} className={inputCls} placeholder="مثال: أكمي للوجستيات" /></div>
             <div><label className="mb-2 block text-sm font-bold">دومين الشركة *</label><input required type="text" value={formData.domain} onChange={e => setFormData({ ...formData, domain: e.target.value })} className={inputCls} placeholder="acme.com" dir="ltr" /></div>
             <div><label className="mb-2 block text-sm font-bold">البريد الإلكتروني للعمل *</label><input required type="email" value={formData.email} onChange={e => setFormData({ ...formData, email: e.target.value })} className={inputCls} placeholder="you@company.com" dir="ltr" /></div>
-            <div><label className="mb-2 block text-sm font-bold">كلمة المرور *</label><input required type="password" value={formData.password} onChange={e => setFormData({ ...formData, password: e.target.value })} className={inputCls} placeholder="8 أحرف على الأقل" minLength={8} /></div>
+            <div><label className="mb-2 block text-sm font-bold">كلمة المرور *</label><input required type="password" value={formData.password} onChange={e => setFormData({ ...formData, password: e.target.value })} className={inputCls} placeholder="10 أحرف على الأقل (أحرف وأرقام)" minLength={10} /></div>
             <div><label className="mb-2 block text-sm font-bold">رابط شعار الشركة</label><input type="url" value={formData.logo_url} onChange={e => setFormData({ ...formData, logo_url: e.target.value })} className={inputCls} placeholder="https://cdn.example.com/logo.png" dir="ltr" /><p className="mt-1.5 text-xs text-slate-400">ارفع الشعار إلى CDN والصق الرابط هنا.</p></div>
             <div><label className="mb-2 block text-sm font-bold">لون العلامة</label><div className="flex items-center gap-3"><input type="color" value={formData.brand_colors} onChange={e => setFormData({ ...formData, brand_colors: e.target.value })} className="h-11 w-16 cursor-pointer rounded-lg border border-slate-200 bg-white" /><input type="text" value={formData.brand_colors} onChange={e => setFormData({ ...formData, brand_colors: e.target.value })} className={inputCls} dir="ltr" /></div></div>
             <div className="pt-3"><button disabled={loading} type="submit" className="group flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#1E5A99] to-[#174a7e] px-6 py-3.5 font-bold text-white shadow-lg shadow-[#1E5A99]/25 transition hover:shadow-xl hover:shadow-[#1E5A99]/35 disabled:opacity-60">{loading ? <Loader2 className="h-5 w-5 animate-spin" /> : <CheckCircle2 className="h-5 w-5" />} {loading ? 'جارٍ إنشاء المساحة…' : 'أنشئ المساحة'} {!loading && <ArrowRight className="h-4 w-4 -scale-x-100 transition-transform group-hover:-translate-x-0.5" />}</button></div>

@@ -275,6 +275,11 @@ export function rateLimitForgotPassword(ip: string): Promise<RateLimitResult> {
   return rateLimit(`forgot:${ip}`, 3, "hour")
 }
 
+/** Public company registration (FX-08): 10 / minute, per IP. */
+export function rateLimitRegister(ip: string): Promise<RateLimitResult> {
+  return rateLimit(`register:${ip}`, 10, "minute")
+}
+
 /** 2FA verify action: 5 / minute, per user id. */
 export function rateLimit2FA(userId: string): Promise<RateLimitResult> {
   return rateLimit(`2fa:${userId}`, 5, "minute")

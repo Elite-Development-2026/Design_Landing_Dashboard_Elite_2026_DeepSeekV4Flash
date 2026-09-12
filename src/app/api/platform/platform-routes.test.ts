@@ -9,11 +9,15 @@ import { NextRequest } from "next/server"
 
 // ── Mocks (hoisted) ────────────────────────────────────────────────────────
 
-const { authState } = vi.hoisted(() => ({
+const { authState, rlState } = vi.hoisted(() => ({
   authState: {
     loginError: null as { message: string } | null,
     createUserError: null as { message: string } | null,
     tenantsInsertError: null as { message: string } | null,
+  },
+  rlState: {
+    registerResult: null as { success: boolean; remaining: number; resetAt: number } | null,
+    registerError: null as Error | null,
   },
 }))
 
@@ -59,6 +63,39 @@ vi.mock("@/lib/notifications/company-welcome-email", () => ({
   sendCompanyConfirmationEmail: vi.fn(async () => undefined),
 }))
 
+// FX-08: control the J1 limiter per test (null → allowed, as the real
+// backend would for a fresh IP).
+vi.mock("@/lib/auth/rate-limit", () => ({
+  rateLimitRegister: vi.fn(async () => {
+    if (rlState.registerError) throw rlState.registerError
+    return (
+      rlState.registerResult ?? {
+        success: true,
+        remaining: 9,
+        resetAt: Date.now() + 60_000,
+      }
+    )
+  }),
+  RateLimitError: class RateLimitError extends Error {
+    code = "AUTH_RATE_LIMITED"
+    statusCode = 429
+    messageAr = "محاولات كثيرة. حاول مرة أخرى لاحقاً."
+    messageEn = "Too many attempts. Try again later."
+    constructor(
+      readonly resetAt: number,
+      readonly limit: number
+    ) {
+      super("Too many attempts")
+    }
+  },
+  RateLimitUnavailableError: class RateLimitUnavailableError extends Error {
+    code = "RATE_LIMIT_UNAVAILABLE"
+    statusCode = 503
+    messageAr = "الخدمة غير متاحة مؤقتاً. حاول مرة أخرى بعد قليل."
+    messageEn = "Service temporarily unavailable. Please try again shortly."
+  },
+}))
+
 vi.mock("@/lib/supabase/server", () => ({
   createClient: async () => ({
     auth: { getUser: async () => ({ data: { user: null } }) },
@@ -102,6 +139,8 @@ beforeEach(() => {
   authState.loginError = null
   authState.createUserError = null
   authState.tenantsInsertError = null
+  rlState.registerResult = null
+  rlState.registerError = null
 })
 
 afterEach(() => {
@@ -190,5 +229,70 @@ describe("GET /api/platform/me (FX-07)", () => {
     const unauth = await meGet()
     expect(unauth.status).toBe(401)
     expect(await unauth.json()).toEqual({ tenant: null })
+  })
+})
+
+// ── POST /api/platform/register — FX-08 (password policy + rate limit) ─────
+
+describe("POST /api/platform/register (FX-08)", () => {
+  const base = {
+    company_name: "Acme",
+    domain: "acme-fx08.test",
+    email: "owner@acme-fx08.test",
+  }
+  const post = (password: string) =>
+    registerPost(
+      jsonPost("/api/platform/register", JSON.stringify({ ...base, password }))
+    )
+
+  it("password 'a' → 400 before any user creation", async () => {
+    // If the policy were bypassed, the weak password would reach
+    // admin.createUser and return 200 via the FX-07 branch — never 400.
+    const res = await post("a")
+    expect(res.status).toBe(400)
+    const json = await res.json()
+    expect(json).toEqual({ error: "Invalid registration details" })
+    expect(json.success).toBeUndefined()
+  })
+
+  it("10 letters but no digit ('abcdefghij') → 400", async () => {
+    const res = await post("abcdefghij")
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({ error: "Invalid registration details" })
+  })
+
+  it("9 chars including a digit ('abcdefg1') → 400", async () => {
+    const res = await post("abcdefg1")
+    expect(res.status).toBe(400)
+  })
+
+  it("valid policy password keeps the unchanged happy path", async () => {
+    const res = await post("Password123")
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ success: true, requires_confirmation: true })
+  })
+
+  it("exhausted per-IP window → 429 AUTH_RATE_LIMITED + Retry-After", async () => {
+    rlState.registerResult = {
+      success: false,
+      remaining: 0,
+      resetAt: Date.now() + 30_000,
+    }
+    const res = await post("Password123")
+    expect(res.status).toBe(429)
+    const json = await res.json()
+    expect(json.code).toBe("AUTH_RATE_LIMITED")
+    expect(Number(res.headers.get("retry-after"))).toBeGreaterThanOrEqual(1)
+  })
+
+  it("limiter backend unavailable → fail closed 503", async () => {
+    const mod = (await import("@/lib/auth/rate-limit")) as unknown as {
+      RateLimitUnavailableError: new () => Error
+    }
+    rlState.registerError = new mod.RateLimitUnavailableError()
+    const res = await post("Password123")
+    expect(res.status).toBe(503)
+    const json = await res.json()
+    expect(json.code).toBe("RATE_LIMIT_UNAVAILABLE")
   })
 })
