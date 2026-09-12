@@ -7,6 +7,12 @@
     "regions":  [
                     "iad1"
                 ],
+    "crons":  [
+                    {
+                        "path":  "/api/webhooks/cron",
+                        "schedule":  "*/10 * * * *"
+                    }
+                ],
     "headers":  [
                     {
                         "source":  "/api/(.*)",
