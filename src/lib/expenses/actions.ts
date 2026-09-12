@@ -8,22 +8,26 @@
 // creates the Accounts Payable row (source_entity_type = 'expense'), and
 // emits the ExpenseApprovedEvent for the Phase 9 journal/VAT consumers.
 //
-// Canonical math (same rules as the invoice engine):
-//   vat_amount = round2(amount × vat_rate / 100)   — `amount` is the NET base
-//   payable total = round2(amount + vat_amount)
+// Canonical math lives in the DB (migration 063, approve_expense_atomic RPC):
+//   vat_amount = round(amount × vat_rate / 100, 2) — `amount` is the NET base
+//   payable total = amount + vat_amount
+//
+// FX-06: the approval is ONE atomic RPC (claim expense via conditional UPDATE
+// → payable with ON CONFLICT DO NOTHING + exactly-one assert →
+// ExpenseApprovedEvent). The old client-side check-then-insert had a
+// double-payable race under two concurrent approvals.
 //
 // Error codes (error-codes.ts): EXP001 not found · EXP002 already approved
 // · EXP003 invalid VAT/recoverability · EXP004 approval guard (DB trigger)
-// · EXP005 no CoA mapping for the category.
+// · EXP005 no CoA mapping for the category. FX06 = RPC exactly-one assert
+// (raw passthrough — not in the taxonomy).
 
 import { revalidatePath } from "next/cache"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { getCurrentUser, requirePermission } from "@/lib/auth/authorization"
 import { writeAuditLog } from "@/lib/auth/sessions"
 import { mapFinancialError } from "@/lib/accounting/csv-utils"
-import { idempotencyKey } from "@/lib/accounting/financial-events"
 import { runEventDispatcher } from "@/lib/accounting/dispatcher"
-import { round2 } from "@/lib/accounting/invoice-math"
 import { rateLimitExpenses } from "@/lib/auth/rate-limit"
 import { emit } from "@/lib/webhooks/events"
 
@@ -35,25 +39,6 @@ import { EXPENSE_TYPES, RECOVERABILITY, type ExpenseVatRecoverability, type Expe
 
 function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : "Unknown error"
-}
-
-type ExpenseRow = {
-  id: string
-  expense_code: string | null
-  expense_type: string
-  category: string | null
-  amount: number
-  expense_date: string
-  description: string | null
-  vendor: string | null
-  driver_id: string | null
-  vehicle_id: string | null
-  is_approved: boolean
-}
-
-type MappingRow = {
-  coa_account_code: string
-  vat_recoverability: ExpenseVatRecoverability
 }
 
 /**
@@ -81,108 +66,36 @@ export async function approveExpense(input: {
       return { success: false, error: mapFinancialError("EXP003: invalid recoverability") }
     }
 
+    // FX-06: the whole approval is ONE atomic RPC (migration 063).
+    // The DB arbitrates the race: a conditional UPDATE claims the expense
+    // (0 rows ⇒ EXP002), the payable insert uses ON CONFLICT DO NOTHING and
+    // asserts exactly one live row (FX06), and the ExpenseApprovedEvent is
+    // enqueued in the same transaction.
     const admin = createAdminClient()
-
-    const { data: expense, error: fetchErr } = await admin
-      .from("expenses")
-      .select("id,expense_code,expense_type,category,amount,expense_date,description,vendor,driver_id,vehicle_id,is_approved")
-      .eq("id", input.id)
-      .eq("tenant_id", currentUser.tenantId)
-      .is("deleted_at", null)
-      .maybeSingle<ExpenseRow>()
-    if (fetchErr || !expense) return { success: false, error: mapFinancialError("EXP001: expense not found") }
-    if (expense.is_approved) return { success: false, error: mapFinancialError("EXP002: already approved") }
-
-    // Resolve the CoA expense account for this category (Phase 7 mapping).
-    const { data: mapping } = await admin
-      .from("expense_category_mappings")
-      .select("coa_account_code,vat_recoverability")
-      .eq("tenant_id", currentUser.tenantId)
-      .eq("expense_type", expense.expense_type)
-      .maybeSingle<MappingRow>()
-    if (!mapping?.coa_account_code) {
-      return { success: false, error: mapFinancialError("EXP005: no CoA mapping for category") }
-    }
-    const finalRecoverability: ExpenseVatRecoverability =
-      input.vat_recoverability ?? mapping.vat_recoverability ?? "recoverable"
-
-    const amount = Number(expense.amount)
-    const vatAmount = round2((amount * vatRate) / 100)
-    const total = round2(amount + vatAmount)
-    const invoiceRef = expense.expense_code ?? `EXP-${expense.id.slice(0, 8).toUpperCase()}`
-
-    // Payable FIRST (mirrors finalizeInvoice): a failed AP insert aborts the
-    // approval so the expense is never left approved without its AP row.
-    const { error: payErr } = await admin.from("payables").insert({
-      tenant_id: currentUser.tenantId,
-      supplier_id: null,
-      invoice_ref: invoiceRef,
-      invoice_date: expense.expense_date,
-      due_date: expense.expense_date,
-      amount,
-      vat_amount: vatAmount,
-      total_amount: total,
-      paid_amount: 0,
-      status: "open",
-      source_entity_type: "expense",
-      source_entity_id: expense.id,
-      notes: `${expense.category ?? expense.expense_type}${expense.vendor ? ` — ${expense.vendor}` : ""}`,
-      created_by: currentUser.authUserId,
+    const { data: rpcData, error: rpcErr } = await admin.rpc("approve_expense_atomic", {
+      p_tenant_id: currentUser.tenantId,
+      p_expense_id: input.id,
+      p_vat_rate: vatRate,
+      p_vat_recoverability: input.vat_recoverability ?? null,
+      p_actor: currentUser.authUserId,
     })
-    if (payErr) return { success: false, error: mapFinancialError(payErr.message) }
-
-    const { error: updErr } = await admin
-      .from("expenses")
-      .update({
-        is_approved: true,
-        approved_by: currentUser.authUserId,
-        approved_at: new Date().toISOString(),
-        vat_rate: vatRate,
-        vat_amount: vatAmount,
-        vat_recoverability: finalRecoverability,
-        coa_account_code: mapping.coa_account_code,
-        updated_by: currentUser.authUserId,
-      })
-      .eq("id", input.id)
-      .eq("tenant_id", currentUser.tenantId)
-      .is("deleted_at", null)
-    if (updErr) {
-      // Roll the AP row back if the approval write failed.
-      await admin
-        .from("payables")
-        .update({ deleted_at: new Date().toISOString() })
-        .eq("source_entity_type", "expense")
-        .eq("source_entity_id", expense.id)
-      return { success: false, error: mapFinancialError(updErr.message) }
+    if (rpcErr) {
+      // EXP002 has a dedicated 409 message in the taxonomy; FX06 (the
+      // exactly-one-assert) passes through verbatim.
+      return { success: false, error: mapFinancialError(rpcErr.message) }
     }
 
-    // ExpenseApprovedEvent — consumers post Dr Expense / Dr VAT Input / Cr AP.
-    // Persistence failures are logged, not thrown (same contract as emitEvent).
-    const { error: evtErr } = await admin.from("financial_events").insert({
-      tenant_id: currentUser.tenantId,
-      event_id: crypto.randomUUID(),
-      idempotency_key: idempotencyKey("expense", expense.id, "approved"),
-      source_type: "expense",
-      source_id: expense.id,
-      event_type: "ExpenseApprovedEvent",
-      event_date: expense.expense_date,
-      payload: {
-        expense_id: expense.id,
-        expense_code: expense.expense_code,
-        expense_type: expense.expense_type,
-        category: expense.category,
-        amount,
-        vat_amount: vatAmount,
-        vat_rate: vatRate,
-        vat_recoverability: finalRecoverability,
-        coa_account_code: mapping.coa_account_code,
-        driver_id: expense.driver_id,
-        vehicle_id: expense.vehicle_id,
-      },
-    })
-    if (evtErr && process.env.NODE_ENV !== "production") {
-      console.error("[financial_events] ExpenseApprovedEvent insert failed:", evtErr.message)
-    }
+    const rpc = rpcData as {
+      expense_id: string
+      expense_ref: string
+      amount: number
+      vat_amount: number
+      total: number
+      coa_account_code: string
+      vat_recoverability: ExpenseVatRecoverability
+      event_id: string
+    } | null
+    if (!rpc) return { success: false, error: mapFinancialError("EXP001: expense not found") }
 
     // Phase 9 — dispatch now: Dr Expense (+ Dr VAT In when recoverable) /
     // Cr AP journal + classified input-VAT ledger row.
@@ -194,21 +107,20 @@ export async function approveExpense(input: {
       module: "expenses",
       action: "expense_approved",
       entityType: "expenses",
-      entityId: expense.id,
+      entityId: rpc.expense_id,
       newValues: {
-        expense_code: expense.expense_code,
-        expense_type: expense.expense_type,
-        amount,
-        vat_amount: vatAmount,
-        total,
-        coa_account_code: mapping.coa_account_code,
-        vat_recoverability: finalRecoverability,
+        expense_ref: rpc.expense_ref,
+        amount: rpc.amount,
+        vat_amount: rpc.vat_amount,
+        total: rpc.total,
+        coa_account_code: rpc.coa_account_code,
+        vat_recoverability: rpc.vat_recoverability,
       },
     })
 
     emit("expense.approved", currentUser.tenantId, {
-      id: expense.id,
-      amount: total,
+      id: rpc.expense_id,
+      amount: rpc.total,
       approvedBy: currentUser.id,
     })
 
