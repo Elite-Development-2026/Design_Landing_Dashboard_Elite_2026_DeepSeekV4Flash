@@ -10,14 +10,23 @@
 --      expense regardless of which code path inserts it.
 --   2. approve_expense_atomic(p_tenant_id, p_expense_id, p_vat_rate,
 --      p_vat_recoverability, p_actor) — a single SECURITY DEFINER RPC that
---      claims the expense with a conditional UPDATE (0 rows ⇒ already
---      approved), inserts the payable with ON CONFLICT DO NOTHING and
---      asserts exactly one live row, and inserts the ExpenseApprovedEvent.
---      One transaction, atomic — the TS action only orchestrates.
+--      validates its inputs (EXP003: finite VAT rate 0–100 and permitted
+--      recoverability values — server-side, not TS-only), claims the expense
+--      with a conditional UPDATE (0 rows ⇒ already approved), inserts the
+--      payable with ON CONFLICT DO NOTHING and asserts exactly one live row,
+--      and inserts the ExpenseApprovedEvent idempotently
+--      (ON CONFLICT (idempotency_key) DO NOTHING against the real 038
+--      column-UNIQUE). One transaction, atomic — the TS action only
+--      orchestrates.
 --
 -- Mirrors 040's conventions: service-role-only execution boundary, pinned
 -- search_path (rule from 061), EXP/DSP error codes, approve ExpenseApproved
 -- only with approver + timestamp (EXP004 trigger contract preserved).
+--
+-- Constraint provenance (review round 2):
+--   financial_events.idempotency_key  TEXT NOT NULL UNIQUE  (038, line 55)
+--   expense_category_mappings         UNIQUE (tenant_id, expense_type)
+--                                     = uq_expense_category_mapping (040, line 72)
 
 -- ═══ 1. One live payable per expense ═════════════════════════════════════
 DO $$
@@ -71,11 +80,28 @@ DECLARE
   v_vat       NUMERIC;
   v_total     NUMERIC;
   v_ref       TEXT;
-  v_recover   TEXT := COALESCE(p_vat_recoverability, 'recoverable');
+  v_recover   TEXT;
   v_claimed   INT;
   v_live_ap   INT;
   v_event_id  UUID;
 BEGIN
+  -- ── RPC-owned validation (review item 3) ──────────────────────────────
+  -- SECURITY DEFINER: must not depend exclusively on TypeScript validation.
+  -- Matches the EXP003 contract in src/lib/expenses/actions.ts.
+  -- Parity note: the TS EXP003 contract is Number.isFinite && 0..100 with NO
+  -- 2-decimal restriction — a rate like 15.555 must pass here exactly as it
+  -- passes in actions.ts. NaN/+Infinity fail `> 100` and -Infinity fails
+  -- `< 0` under Postgres numeric ordering, matching !Number.isFinite.
+  IF p_vat_rate IS NULL
+     OR p_vat_rate < 0 OR p_vat_rate > 100 THEN
+    RAISE EXCEPTION 'EXP003: invalid VAT rate';
+  END IF;
+  -- Mirrors RECOVERABILITY in src/lib/expenses/constants.ts exactly.
+  IF p_vat_recoverability IS NOT NULL
+     AND p_vat_recoverability NOT IN
+         ('recoverable', 'non_recoverable', 'pending_review') THEN
+    RAISE EXCEPTION 'EXP003: invalid recoverability';
+  END IF;
   -- ── Read the expense and the category→CoA mapping ─────────────────────
   SELECT id, expense_code, expense_type, category, amount, expense_date,
          description, vendor, driver_id, vehicle_id, is_approved
@@ -89,15 +115,22 @@ BEGIN
     RAISE EXCEPTION 'EXP001: expense not found';
   END IF;
 
-  SELECT coa_account_code, vat_recoverability INTO v_mapping
-  FROM expense_category_mappings
-  WHERE tenant_id = p_tenant_id
-    AND expense_type = v_expense.expense_type;
-
-  IF v_mapping.coa_account_code IS NULL THEN
-    RAISE EXCEPTION 'EXP005: no CoA mapping for category';
-  END IF;
-  v_recover := COALESCE(NULLIF(p_vat_recoverability, ''), v_mapping.vat_recoverability, 'recoverable');
+  -- INTO STRICT with deliberate error handling (review item 2). The queried
+  -- key is unique by uq_expense_category_mapping (040: UNIQUE (tenant_id,
+  -- expense_type)), so NO_DATA_FOUND (P0002) is the only realistic outcome
+  -- to handle; a TOO_MANY_ROWS would mean the constraint itself is broken
+  -- and propagates loudly — never a silent arbitrary pick.
+  BEGIN
+    SELECT coa_account_code, vat_recoverability
+      INTO STRICT v_mapping
+    FROM expense_category_mappings
+    WHERE tenant_id = p_tenant_id
+      AND expense_type = v_expense.expense_type;
+  EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+      RAISE EXCEPTION 'EXP005: no CoA mapping for category';
+  END;
+  v_recover := COALESCE(p_vat_recoverability, v_mapping.vat_recoverability, 'recoverable');
 
   -- ── Claim the expense (the race arbiter) ────────────────────────────────
   -- The conditional predicate IS the mutex: under READ COMMITTED a second
@@ -185,7 +218,14 @@ BEGIN
       'driver_id',         v_expense.driver_id,
       'vehicle_id',        v_expense.vehicle_id
     )
-  );
+  )
+  -- Idempotent replay: the actual DB uniqueness guarantee is the column
+  -- constraint financial_events.idempotency_key UNIQUE (038), not an
+  -- invented target. A replayed approval re-raises EXP002 on the claim
+  -- UPDATE before reaching this statement; this arm covers an event row
+  -- that already exists without an approved expense (crash-after-commit
+  -- leftovers / replayed event with the expense later un-approved).
+  ON CONFLICT (idempotency_key) DO NOTHING;
 
   RETURN jsonb_build_object(
     'expense_id', v_expense.id,

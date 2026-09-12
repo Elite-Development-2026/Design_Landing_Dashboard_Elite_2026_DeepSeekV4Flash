@@ -180,6 +180,22 @@ describe("FX-06 approveExpense race", () => {
     expect(res.error).toBe("This expense is already approved.")
   })
 
+  // Review round 2 — mapping determinism: the RPC raises EXP005 when the
+  // INTO STRICT read of expense_category_mappings finds no row for the
+  // expense's (tenant_id, expense_type) key. mapFinancialError resolves the
+  // code against the REAL taxonomy (EXP005 = "No Chart of Accounts mapping…").
+  it("maps an RPC EXP005 failure (no CoA mapping) to the taxonomy message", async () => {
+    rpcMock.mockImplementationOnce(async () => ({
+      data: null,
+      error: { message: "EXP005: no CoA mapping for category" },
+    }))
+    const res = await approveExpense({ id: "exp-5" })
+    expect(res.success).toBe(false)
+    expect(res.error).toBe(
+      "No Chart of Accounts mapping exists for this expense category."
+    )
+  })
+
   it("passes the FX06 exactly-one assert through verbatim (not masked)", async () => {
     rpcMock.mockImplementationOnce(async () => ({
       data: null,
@@ -191,15 +207,28 @@ describe("FX-06 approveExpense race", () => {
   })
 
   it("rejects invalid VAT before touching the DB", async () => {
-    const res = await approveExpense({ id: "exp-5", vat_rate: 150 })
+    const res = await approveExpense({ id: "exp-vat", vat_rate: 150 })
     expect(res.success).toBe(false)
     expect(res.error).toBe("Invalid VAT rate or recoverability classification.")
     expect(rpcMock).not.toHaveBeenCalled()
   })
 
+  // Review round 2 — RPC-owned validation parity: an unvalidated value must
+  // also fail at the DB layer (SECURITY DEFINER must not trust TS-only
+  // checks). The RPC raises EXP003; the action maps it to the same message.
+  it("maps an RPC-side EXP003 (recoverability) failure to the taxonomy message", async () => {
+    rpcMock.mockImplementationOnce(async () => ({
+      data: null,
+      error: { message: "EXP003: invalid recoverability" },
+    }))
+    const res = await approveExpense({ id: "exp-6", vat_recoverability: "recoverable" })
+    expect(res.success).toBe(false)
+    expect(res.error).toBe("Invalid VAT rate or recoverability classification.")
+  })
+
   it("rejects when not authenticated", async () => {
     authState.user = null
-    const res = await approveExpense({ id: "exp-6" })
+    const res = await approveExpense({ id: "exp-7" })
     expect(res.success).toBe(false)
     expect(res.error).toBe("Not authenticated.")
     expect(rpcMock).not.toHaveBeenCalled()
@@ -207,7 +236,7 @@ describe("FX-06 approveExpense race", () => {
 
   it("rejects when rate limited", async () => {
     rateLimitState.ok = false
-    const res = await approveExpense({ id: "exp-7" })
+    const res = await approveExpense({ id: "exp-8" })
     expect(res.success).toBe(false)
     expect(res.error).toMatch(/rate limit/i)
     expect(rpcMock).not.toHaveBeenCalled()
