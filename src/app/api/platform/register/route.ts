@@ -53,7 +53,17 @@ export async function POST(req: NextRequest) {
       user_metadata: { _invite_provisioned: true, company_name, domain },
     });
 
-    if (authError) throw authError;
+    if (authError) {
+      // FX-07 anti-enumeration: `admin.createUser` for an existing account
+      // fails ("User already registered" …) and used to surface as a raw
+      // error string. Existing and fresh emails must behave identically:
+      // same status, same body. Details stay in server logs only.
+      console.error('platform register: user create rejected:', authError.message);
+      return NextResponse.json(
+        { success: true, requires_confirmation: emailConfirmationEnabled },
+        { status: 200 }
+);
+    }
     if (!authData.user) throw new Error('Failed to create user');
 
     // Provision the tenant + membership + role rows BEFORE returning, so the
@@ -115,7 +125,10 @@ export async function POST(req: NextRequest) {
     // Email confirmation disabled → straight to sign-in with a success banner.
     return NextResponse.json({ success: true, requires_confirmation: false });
   } catch (error) {
+    // FX-07: never relay raw error text — this catch previously returned
+    // `error.message`, leaking PostgREST diagnostics (table/column names,
+    // unique-violation details) to the client.
     console.error('Registration error:', error);
-    return NextResponse.json({ error: error instanceof Error ? error.message : 'Registration failed' }, { status: 500 });
+    return NextResponse.json({ error: 'Registration failed' }, { status: 500 });
   }
 }
