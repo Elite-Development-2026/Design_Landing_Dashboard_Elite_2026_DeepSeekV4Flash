@@ -22,12 +22,19 @@ export async function POST(req: NextRequest) {
       password,
     });
 
-    if (authError) {
-      return NextResponse.json({ error: authError.message }, { status: 401 });
-    }
-
-    if (!authData.user) {
-      return NextResponse.json({ error: 'Invalid user' }, { status: 401 });
+    if (authError || !authData.user) {
+      // FX-07: authError.message leaks Supabase state ("Email not confirmed",
+      // "User already registered" …) and turns login into an account-
+      // enumeration oracle. Same generic 401 for every auth failure; details
+      // stay in server logs only.
+      console.error(
+        'platform login failed:',
+        authError?.message ?? 'no user returned'
+      );
+      return NextResponse.json(
+        { error: 'Invalid email or password' },
+        { status: 401 }
+      );
     }
 
     const { data: membership, error: membershipError } = await supabase
